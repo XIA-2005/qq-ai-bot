@@ -14,19 +14,20 @@ export function childEnvironment(profile:string,work:string){
 }
 export async function freePort(){return new Promise<number>((resolve,reject)=>{const s=net.createServer();s.on('error',reject);s.listen(0,'127.0.0.1',()=>{const port=(s.address() as net.AddressInfo).port;s.close(e=>e?reject(e):resolve(port))})})}
 /** Dependency seam for an offline fake NapCat: no real runtime, QQ account, or network service. */
-export interface LoginRuntimeOptions {platform?:NodeJS.Platform;launch?:(file:string,args:string[],options:SpawnOptions)=>ChildProcess;firstPollMs?:number;pollMs?:number}
+export interface LoginRuntimeOptions {platform?:NodeJS.Platform;launch?:(file:string,args:string[],options:SpawnOptions)=>ChildProcess;firstPollMs?:number;pollMs?:number;verifyRuntime?:()=>Promise<unknown>;missingRuntimeMessage?:string}
 export class LoginManager{
  state:LoginState;private child?:ChildProcess;private timer?:NodeJS.Timeout;private generation=0;private work:string;
  private restoreAccount='';private port=0;private wsPort=0;private webToken='';private wsToken='';private credential='';private authAt=0;private qrUrl='';private attached=false;private busy=false;private born=0;private failures=0;
- constructor(private runtime:string,private profile:string,private changed:()=>void,private ready:(url:string,token:string)=>void,private disconnected:()=>void,private options:LoginRuntimeOptions={}){this.work=path.join(profile,'napcat-work');this.state={phase:'idle',message:'点击登录，在这里扫码连接你的另一个 QQ 账号。',qr:'',available:['node.exe','index.js','wrapper.node','crypto.dll','ssl.dll','napcat/napcat.mjs'].every(f=>fs.existsSync(path.join(runtime,f)))};}
+ constructor(private runtime:string,private profile:string,private changed:()=>void,private ready:(url:string,token:string)=>void,private disconnected:()=>void,private options:LoginRuntimeOptions={}){this.work=path.join(profile,'napcat-work');const available=['node.exe','index.js','wrapper.node','crypto.dll','ssl.dll','napcat/napcat.mjs'].every(f=>fs.existsSync(path.join(runtime,f)));this.state={phase:'idle',message:available?'点击登录，在这里扫码连接你的另一个 QQ 账号。':options.missingRuntimeMessage||'QQ 运行时缺失，请保留软件完整目录。',qr:'',available};}
  private update(phase:LoginPhase,message:string,qr=this.state.qr){this.state={...this.state,phase,message,qr};this.changed()}
  async start(account=''){
   if(this.busy)throw new Error('登录组件正在准备，请稍候');if((this.options.platform??process.platform)!=='win32')throw new Error('扫码运行时仅支持 Windows x64');
   if(account&&!validAccount(account))throw new Error('记住的 QQ 账号无效');this.restoreAccount=account;this.busy=true;
   try{
-   await this.stop();if(!this.state.available)throw new Error('内置 QQ 运行时缺失，请保留软件完整目录');
+   await this.stop();if(!this.state.available)throw new Error(this.options.missingRuntimeMessage||'内置 QQ 运行时缺失，请保留软件完整目录');
+   await this.options.verifyRuntime?.();
    const epoch=++this.generation;this.born=Date.now();this.failures=0;this.attached=false;this.qrUrl='';this.credential='';this.webToken=randomBytes(32).toString('hex');this.wsToken=randomBytes(32).toString('hex');
-   this.update('starting',account?'正在恢复上次 QQ 登录，请稍候…':'正在启动内置 QQ 登录服务…','');this.port=await freePort();do{this.wsPort=await freePort()}while(this.wsPort===this.port);
+   this.update('starting',account?'正在恢复上次 QQ 登录，请稍候…':'正在启动本机 QQ 登录服务…','');this.port=await freePort();do{this.wsPort=await freePort()}while(this.wsPort===this.port);
    if(epoch!==this.generation)return;
    const config=path.join(this.work,'config');fs.mkdirSync(config,{recursive:true});
    for(const p of ['AppData/Roaming','AppData/Local'])fs.mkdirSync(path.join(this.profile,p),{recursive:true});

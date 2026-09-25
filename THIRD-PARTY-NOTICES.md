@@ -2,8 +2,8 @@
 
 NapCatQQ v4.18.28, Copyright © 2024 Mlikiowa.
 Source: https://github.com/NapNeko/NapCatQQ
-Windows Node distribution obtained from upstream release; upstream code remains unmodified.
-Runtime supplemented with crypto.dll and ssl.dll from the user's existing official QQ 9.9.35-52892 update archive, for local use on this computer. See supplemental-dlls.json in the runtime directory.
+The desktop-only Windows installer does NOT contain NapCat or QQ components. A separate, locally assembled runtime, if the user provides one, should come from the upstream Windows Node release without modification.
+For the locally vetted full-runtime profile only: crypto.dll and ssl.dll came from the user's own official QQ 9.9.35-52892 update archive for local use on that computer. The QQ DLLs and the archive are NOT part of the public installer; see supplemental-dlls.json only if present in a separately obtained runtime directory.
 Personal non-commercial use only; do not republish modified NapCat or use commercially without permission.
 QQ native components belong to Tencent and remain subject to their terms; no affiliation or authorization is implied.
 

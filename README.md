@@ -4,9 +4,9 @@
 
 配置、聊天记忆和用量统计保存在本机用户数据目录；生成回复时，相关消息内容（启用视觉后还可能包括图片）会发送到所配置的 DeepSeek API。启用手机远程后，手机请求经你配置的 HTTPS 隧道转发到本机。不要把“本机存储”理解为“消息不会离开本机”。
 
-> **版本**：0.9.2 ｜ **平台**：Windows 10/11 x64 ｜ **许可**：MIT
+> **版本**：0.9.3 ｜ **平台**：Windows 10/11 x64 ｜ **许可**：MIT
 
-> **这是源码仓库，不是完整的 Windows 安装包。** NapCat/QQ 第三方运行时和 `release-v*/` 打包目录不提交至 GitHub。根目录的 `启动机器人.exe` 是选包启动器，单独下载它或源码不能直接运行；须先按下文从有权使用的可信来源恢复运行时、校验并在本地打包。本仓库的测试通过不等于真实 QQ 或打包版验收。
+> **源码仓库不含完整 QQ 运行时。** GitHub Release 可提供仅能独立安装、打开桌面界面的 Windows 安装器，**不附带 NapCat/QQ 组件；QQ 登录与自动回复须你自行准备合法运行时**。参见 [仅界面安装器说明](docs/windows-external-runtime.md)。NapCat/QQ 第三方运行时和 `release-v*/` 打包目录不提交至 GitHub。根目录的 `启动机器人.exe` 是选包启动器，单独下载它或源码不能直接运行。离线测试通过不等于真实 QQ 或付费 API 验收。
 
 ---
 
@@ -59,11 +59,12 @@ npm start            # 本地启动
 ## 打包
 
 ```bash
+npm run pack:external-win  # 仅桌面界面、无 QQ 组件的 NSIS 安装器 -> artifacts/external-runtime-v<版本>/
 npm run pack:win     # 免安装目录 -> release-v<版本>/win-unpacked/
 npm run dist:win     # NSIS 安装包 -> release-v<版本>/QQ-AI-Bot-Setup-<版本>.exe
 ```
 
-打包前需先完成上面的 NapCat 运行时校验，否则 `pack:win` 会中止。
+`pack:external-win` **不要求也不打包** `vendor/napcat-runtime/`，安装后可独立打开桌面界面。若要登录 QQ，必须按 [仅界面安装器说明](docs/windows-external-runtime.md) 自行在用户数据目录安装符合锁定版本和授权要求的运行时；登录前软件会离线校验关键 SHA-256 和文件数量，不匹配时拒绝启动。`pack:win` 和 `dist:win` 用于包含完整运行时的**本地**打包；它们均要求上面的运行时校验成功，不得将含 QQ 组件的结果直接公开分发。
 
 > **注意**：`dist:win` **不会**生成 `launch-manifest.json`。根目录的 `启动机器人.exe` 依赖这个清单来校验并选择版本，缺少它会导致启动器跳过这个版本、回退到旧版本。用 `dist:win` 出包后请补一句：
 >

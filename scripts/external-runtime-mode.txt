@@ -1,0 +1,1 @@
+External-runtime Windows installer. No NapCat or QQ native components are bundled.

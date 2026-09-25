@@ -1,7 +1,9 @@
 import {app,BrowserWindow,ipcMain,shell,session} from 'electron';
 import path from 'node:path';
+import fs from 'node:fs';
 import {matchesUiUrl} from './ipc-origin';
 import {LoginMemory} from './login-memory';
+import {verifyExternalRuntime} from './runtime-verification';
 import {AutoReply} from './auto-reply';
 import {DesktopService} from './desktop';
 import {ApiAccount} from './api-account';
@@ -26,6 +28,7 @@ app.setName('QQ AI Bot');
 if(!app.requestSingleInstanceLock()){app.quit()}else{
  let preview:PreviewSession;let desktop:DesktopService;let account:ApiAccount;let usage:UsageLedger;let budget:BudgetManager;
  let memory:LoginMemory;let win:BrowserWindow|undefined;let store:Store;let engine:Engine;let bot:OneBot;let login:LoginManager;let testing=false;let testController:AbortController|undefined;
+ let externalRuntime=false;let runtimeDir='';
  let adminHandler:AdminCommandHandler|undefined;let webServer:MobileWebServer|undefined;let control:ControlService;let remoteAccess:RemoteAccess;
  const auto=new AutoReply();if(process.argv.includes('--pause-replies'))auto.suspend();let personaController:AbortController|undefined;let personaProgress={done:0,total:0};
  const logs:{time:string;message:string}[]=[];
@@ -33,7 +36,7 @@ if(!app.requestSingleInstanceLock()){app.quit()}else{
  const autoConditions=()=>({connected:!!bot?.connected,enabled:store?.config.autoReplyOnLogin!==false,consented:!!store?.config.autoReplyConsent&&store.config.autoReplyConsentVersion>=FOLLOWUP_DISCLOSURE_VERSION,hasKey:!!store?.key,hasWhitelist:!!store&&hasEnabledTargets(store.config),busy:!!engine?.active||testing||!!personaController});
  const emit=()=>{if(engine&&store&&bot&&auto.consume(autoConditions())){engine.start();log('条件就绪，已自动开启白名单回复');}if(win&&!win.isDestroyed())win.webContents.send('state',snapshot());desktop?.refresh(!!bot?.connected,!!engine?.running,auto.status(autoConditions(),engine?.running||false))};
  const log=(message:string)=>{logs.unshift({time:new Date().toLocaleTimeString('zh-CN',{hour12:false}),message});logs.splice(150);emit()};
- const snapshot=()=>({runtimePackage:{version:app.getVersion?.()||'开发版',path:process.execPath||'',packaged:!!app.isPackaged},usage:usage?.view,budget:budget?.view,preview:preview?.view,desktop:desktop?.view,remoteAccess:remoteAccess?.view(store?.config.remotePublicUrl),autoReplyStatus:auto.status(autoConditions(),engine?.running||false),loginMemory:memory?.view,persona:{busy:!!personaController,...personaProgress},running:engine?.running||false,connected:bot?.connected||false,qqStatus:bot?.status||'未连接',self:bot?.self||'',modelState:testing?'验证中':account?.view.model.status||'未配置 API Key',apiAccount:account?.view,sent:engine?.sent||0,errors:engine?.errors||0,pending:engine?.pending||0,active:engine?.active||false,activeCount:engine?.activeCount||0,merging:engine?.merging||0,merged:engine?.merged||0,expired:engine?.expired||0,sessions:engine?.sessions||0,groupSessions:engine?.groupSessions||[],login:login?.state||{phase:'idle',message:'',qr:'',available:false},logs});
+ const snapshot=()=>({runtimePackage:{version:app.getVersion?.()||'开发版',path:process.execPath||'',packaged:!!app.isPackaged,externalRuntime,runtimeDir},usage:usage?.view,budget:budget?.view,preview:preview?.view,desktop:desktop?.view,remoteAccess:remoteAccess?.view(store?.config.remotePublicUrl),autoReplyStatus:auto.status(autoConditions(),engine?.running||false),loginMemory:memory?.view,persona:{busy:!!personaController,...personaProgress},running:engine?.running||false,connected:bot?.connected||false,qqStatus:bot?.status||'未连接',self:bot?.self||'',modelState:testing?'验证中':account?.view.model.status||'未配置 API Key',apiAccount:account?.view,sent:engine?.sent||0,errors:engine?.errors||0,pending:engine?.pending||0,active:engine?.active||false,activeCount:engine?.activeCount||0,merging:engine?.merging||0,merged:engine?.merged||0,expired:engine?.expired||0,sessions:engine?.sessions||0,groupSessions:engine?.groupSessions||[],login:login?.state||{phase:'idle',message:'',qr:'',available:false},logs});
  const trackedWithUsage=(c:Config,key:string,messages:ChatMessage[],signal:AbortSignal,context:UsageContext)=>trackedModel(c,key,messages,signal,context,{account,usage,budget,complete:completeWithUsage});
  const trackedComplete=async(c:Config,key:string,messages:ChatMessage[],signal:AbortSignal,context:UsageContext)=>(await trackedWithUsage(c,key,messages,signal,context)).text;
  const viewConfig=()=>({desktop:desktop?.view,remoteAccess:remoteAccess?.view(store.config.remotePublicUrl),config:store.config,loginMemory:memory.view,hasKey:!!store.key,hasToken:!!store.token,warning:store.warning});
@@ -68,7 +71,10 @@ if(!app.requestSingleInstanceLock()){app.quit()}else{
   webServer=new MobileWebServer({control,access:remoteAccess,getPublicUrl:()=>store.config.remotePublicUrl,log},{port:5188,host:'127.0.0.1'});
   const isTestRunner=typeof process!=='undefined'&&(Boolean(process.env?.NODE_TEST_CONTEXT)||process.env?.NODE_ENV==='test'||(Array.isArray(process.argv)&&process.argv.some(a=>a.includes('test')||a.includes('.test.'))));
   if(!isTestRunner)void webServer.start().catch(err=>log(`移动端控制面板启动异常: ${err instanceof Error?err.message:String(err)}`));
-  login=new LoginManager(app.isPackaged?path.join(process.resourcesPath,'napcat-runtime'):path.join(__dirname,'../vendor/napcat-runtime'),path.join(app.getPath('userData'),'qq-profile'),emit,(url,token)=>bot.connect(url,token),()=>bot.close());
+  externalRuntime=!!app.isPackaged&&fs.existsSync(path.join(process.resourcesPath,'external-runtime-mode.txt'));
+  runtimeDir=externalRuntime?path.join(app.getPath('userData'),'external-runtime'):app.isPackaged?path.join(process.resourcesPath,'napcat-runtime'):path.join(__dirname,'../vendor/napcat-runtime');
+  const missingRuntimeMessage=externalRuntime?'本安装器不附带 NapCat/QQ 组件。请按发布说明将经核验的运行时放入本机指定目录，彻底退出后重新打开。':undefined;
+  login=new LoginManager(runtimeDir,path.join(app.getPath('userData'),'qq-profile'),emit,(url,token)=>bot.connect(url,token),()=>bot.close(),{missingRuntimeMessage,verifyRuntime:externalRuntime?()=>verifyExternalRuntime(runtimeDir,path.join(process.resourcesPath,'vendor-runtime.lock.json')):undefined});
   const show=()=>{win?.show();win?.focus()};
   desktop=new DesktopService(app.getPath('userData'),{show,pause:()=>{control.pause({source:'desktop',id:'local'});emit()},resume:()=>{try{control.start({source:'desktop',id:'local'});}catch(e){show();log(e instanceof Error?e.message:'请在主窗口开启回复')}},quit:()=>app.quit(),log});
   app.setAppUserModelId?.('com.example.qqaibot');

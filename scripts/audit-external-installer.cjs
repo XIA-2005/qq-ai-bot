@@ -1,0 +1,28 @@
+'use strict';
+// Release gate for the desktop-only Windows build: inspect what electron-builder actually packaged.
+const fs=require('node:fs');const path=require('node:path');const crypto=require('node:crypto');const assert=require('node:assert/strict');
+const asar=require('@electron/asar');
+const root=path.resolve(__dirname,'..'),pkg=require('../package.json');
+const base=path.join(root,'artifacts',`external-runtime-v${pkg.version}`);
+const unpacked=path.join(base,'win-unpacked'),resources=path.join(unpacked,'resources');
+const installer=path.join(base,`QQ-AI-Bot-Setup-${pkg.version}-external-runtime.exe`);
+const app=path.join(resources,'app.asar');
+assert.ok(fs.statSync(installer).size>1000000,'NSIS installer absent or implausibly small');
+assert.ok(fs.statSync(path.join(unpacked,'QQ AI Bot.exe')).size>1000000,'packaged desktop app absent');
+assert.deepEqual(fs.readdirSync(resources).sort(),['THIRD-PARTY-NOTICES.md','app-update.yml','app.asar','default_app.asar','elevate.exe','external-runtime-mode.txt','vendor-runtime.lock.json'].sort(),'resources must contain only audited desktop-only files and Electron/NSIS scaffolding');
+assert.ok(fs.readFileSync(path.join(resources,'external-runtime-mode.txt'),'utf8').includes('No NapCat or QQ native components'));
+assert.deepEqual(fs.readFileSync(path.join(resources,'vendor-runtime.lock.json')),fs.readFileSync(path.join(root,'scripts','vendor-runtime.lock.json')));
+const entries=asar.listPackage(app).map(p=>p.replaceAll('\\','/'));
+const forbidden=/(?:^|\/)(?:vendor|napcat-runtime|qq-profile|crypto\.dll|ssl\.dll|wrapper\.node|SSOShareInfoHelper64\.dll|parent-ipc-core-x64\.dll|\.env[^/]*|settings[^/]*\.json)(?:\/|$)/i;
+assert.deepEqual(entries.filter(p=>forbidden.test(p)),[],'runtime, credentials or local settings leaked into app.asar');
+for(const file of fs.readdirSync(unpacked))assert.ok(!forbidden.test('/'+file),'third-party runtime leaked into win-unpacked');
+const main=asar.extractFile(app,'dist/main.js').toString('utf8');
+const login=asar.extractFile(app,'dist/login.js').toString('utf8');
+const ui=asar.extractFile(app,'ui/app.js').toString('utf8');
+assert.ok(main.includes('external-runtime-mode.txt')&&main.includes('vendor-runtime.lock.json'),'packaged main must select external runtime mode');
+assert.ok(login.includes('verifyRuntime')&&ui.includes('runtime.externalRuntime?'),'packaged login must gate external runtime and UI must disclose it');
+const size=fs.statSync(installer).size;
+const sha=crypto.createHash('sha256').update(fs.readFileSync(installer)).digest('hex');
+console.log(`OFFLINE INSTALLER AUDIT PASS: ${pkg.version}; ${entries.length} ASAR paths; 7 approved resources; no QQ/NapCat runtime bundled`);
+console.log(`ASSET: ${path.relative(root,installer)} (${size} bytes)`);
+console.log(`SHA256: ${sha}`);

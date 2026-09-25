@@ -22,6 +22,7 @@ const accountUI=AccountUI.mount({call,notice,ensureSaved:ensureSavedApi});
 const usageUI=UsageUI.mount({call,notice,confirm:confirmAction,getEditors:()=>whitelistEditors});
 function render(s){
  const runtime=s.runtimePackage||{};$('package-runtime').textContent=runtime.version||'开发版';$('runtime-package-version').textContent=`${runtime.packaged?'打包运行':'开发运行'} · ${runtime.version||'开发版'}`;$('runtime-package-path').textContent=runtime.path||'未提供运行路径';
+  $('runtime-intro').textContent=runtime.externalRuntime?`此安装器不附带 NapCat/QQ 组件。请将你自行取得、可合法使用的运行时放到 ${runtime.runtimeDir||'本机应用数据目录'}，彻底退出后重开；登录前会再次校验哈希。`:'运行时随完整包提供；无需填写 OneBot 令牌。';
  accountUI.render(s);usageUI.render(s);
  workspaceUI.render(s);
  renderRemote(s.remoteAccess);
@@ -32,9 +33,9 @@ function render(s){
  $('login-badge').textContent=({idle:'未登录',starting:'正在准备',scan:'等待扫码',scanned:'等待手机确认',initializing:'正在初始化',online:'已登录',error:'需要重试'})[l.phase]||l.phase;
  $('qr-image').hidden=!l.qr;$('qr-placeholder').hidden=!!l.qr;
  if(l.qr){if($('qr-image').getAttribute('src')!==l.qr)$('qr-image').src=l.qr}else $('qr-image').removeAttribute('src');
- $('qr-placeholder').textContent=l.phase==='online'?'QQ 已登录':l.phase==='starting'?'正在准备二维码…':'点击登录 QQ\n或等待恢复登录';
- $('login-qq').textContent=l.phase==='error'?'重新登录':'登录 QQ';$('login-qq').disabled=['starting','scan','scanned','initializing','online'].includes(l.phase);
- $('refresh-qr').disabled=['idle','online'].includes(l.phase);
+ $('qr-placeholder').textContent=l.available===false?'运行时未就绪，请先按发布说明安装':l.phase==='online'?'QQ 已登录':l.phase==='starting'?'正在准备二维码…':'点击登录 QQ\n或等待恢复登录';
+ $('login-qq').textContent=l.phase==='error'?'重新登录':'登录 QQ';$('login-qq').disabled=l.available===false||['starting','scan','scanned','initializing','online'].includes(l.phase);
+ $('refresh-qr').disabled=l.available===false||['idle','online'].includes(l.phase);
 $('run-badge').textContent=s.autoReplyStatus||(s.running?'自动回复运行中':'自动回复已暂停');$('run-badge').classList.toggle('on',s.running);$('run-badge').classList.toggle('waiting',!s.running&&!!s.autoReplyStatus&&s.autoReplyStatus!=='自动回复已暂停');$('qq-state').textContent=s.connected?'已连接':'未连接';$('qq-self').textContent=s.self?'QQ '+s.self:s.qqStatus;$('model-state').textContent=s.modelState;$('sent').textContent=s.sent;$('queue').textContent=`处理中 ${s.activeCount||0} · 待处理 ${s.pending}（合并中 ${s.merging||0}）`;$('footer-state').textContent=s.errors?`本次 ${s.errors} 次处理错误`:`已合并 ${s.merged||0} 条补充消息 · 过期 ${s.expired||0} 个任务`;$('start').disabled=s.running;renderSessions(s.groupSessions||[]);
  const box=$('log-list');box.replaceChildren();if(!s.logs.length){const empty=document.createElement('div');empty.className='empty';empty.textContent='还没有日志。完成配置后，从连接 QQ 开始。';box.append(empty)}else s.logs.forEach(row=>{const line=document.createElement('div');line.className='log-row';const time=document.createElement('time');time.textContent=row.time;const text=document.createElement('span');text.textContent=row.message;line.append(time,text);box.append(line)})}
 function renderSessions(list){const box=$('group-sessions');if(!box)return;box.replaceChildren();
@@ -56,7 +57,7 @@ function engagementRender(){const level=EngagementUI.clampEngagement(Number($('e
 $('engagement').oninput=engagementRender;
 function action(id,fn){$(id).onclick=async()=>{const b=$(id);b.disabled=true;try{await fn()}catch(e){notice(e.message,true)}finally{b.disabled=false}}}
 document.querySelectorAll('.save').forEach(b=>b.onclick=async()=>{b.disabled=true;try{const payload=read();if(payload.config.visionEnabled&&!currentConfig.visionEnabled){if(!await confirmAction('开启图片和表情包识别？','会把已启用白名单对话中需要回复的图片原图发送给现有 DeepSeek 模型，并可能产生图片 Token 费用；表情包也属于图片。请先告知相关好友和群成员。不记录原图或下载地址，白名单限制仍然生效；保存成功会解除此前的手动暂停，如需停止回复请再次点击暂停。'))return;payload.confirmVision=true;}if(WorkspaceUI.needsSessionConsent(currentConfig,payload.config)){if(!await confirmAction('开启群聊持续参与？','新增的群被 @ 一次后会持续参与全群聊天，直到冷场自动结束。群内其他人的文字也会交给模型判断，可能产生更多费用，请先告知群成员。'))return;payload.confirmSession=true;}if(WorkspaceUI.needsConsent(currentConfig,payload.config)){if(!await confirmAction('允许群聊主动接话？','新增开启的群会将普通聊天交给模型判断并可能主动发言、产生费用；它也会因此像被 @ 过一样持续参与。请先告知群成员。'))return;payload.confirmProactive=true;}if(payload.config.autoReplyOnLogin&&(!currentConfig.autoReplyConsent||currentConfig.autoReplyConsentVersion<FOLLOWUP_DISCLOSURE_VERSION)){if(!await confirmAction('确认登录后自动回复及群追问','保存配置成功后，即使之前手动暂停，只要 QQ 已连接、API Key 与白名单就绪，就会立即开启回复；以后每次打开软件，QQ 登录就绪且配置齐全也会自动开启。\n默认保留群追问：机器人在白名单群发言后 90 秒内，任何成员的未 @ 消息也可能与近期群聊文字、机器人发言一同送给 DeepSeek 判断是否在追问；即使最终不发言，模型判断也可能计费。积极度为 0 或关闭主动接话不会关闭追问。开启图片识别后，需处理的图片也可能上传。\n请先告知相关好友和群成员；个人 QQ 非官方接入存在账号风控风险。旧版同意未包含追问，本次需重新确认。'))return;payload.confirmAuto=true;}const saved=await call('save-config',payload);fill(saved);notice(saved.running?'配置已保存。QQ 登录保持不变，自动回复已开启。':`配置已保存。QQ 登录保持不变；${saved.autoReplyStatus}。`)}catch(e){notice(e.message,true)}finally{b.disabled=false}});
-action('login-qq',async()=>{if(await confirmAction('扫码登录另一个 QQ 账号','将启动内置的本机 QQ 运行时并显示真实登录二维码。请使用你希望托管的账号扫码。\n这是非官方接入，可能掉线或触发账号风控。内置 NapCat 仅限符合上游许可的个人非商业使用。\n每次打开软件，QQ 就绪且配置齐全、完成本版本知情确认后，将自动向白名单发送回复。机器人在白名单群发言后 90 秒内，任何成员的未 @ 消息与近期群聊文字也可能交给 DeepSeek 判断是否追问；即使不回复也可能计费，积极度为 0 不会关闭追问。请先告知相关成员。'))render(await call('login-qq',{consent:true,replyConsent:!!currentConfig.autoReplyOnLogin}))});
+action('login-qq',async()=>{if(await confirmAction('扫码登录另一个 QQ 账号','将启动此软件选用的本机 QQ 运行时并显示真实登录二维码。请使用你希望托管的账号扫码。\n这是非官方接入，可能掉线或触发账号风控。NapCat 的使用须符合上游许可，不代表获得腾讯 QQ 组件的再分发授权。\n每次打开软件，QQ 就绪且配置齐全、完成本版本知情确认后，将自动向白名单发送回复。机器人在白名单群发言后 90 秒内，任何成员的未 @ 消息与近期群聊文字也可能交给 DeepSeek 判断是否追问；即使不回复也可能计费，积极度为 0 不会关闭追问。请先告知相关成员。'))render(await call('login-qq',{consent:true,replyConsent:!!currentConfig.autoReplyOnLogin}))});
 action('refresh-qr',async()=>render(await call('refresh-qr')));
 action('stop-login',async()=>{if(await confirmAction('停止 QQ 登录服务？','将暂停回复并断开本软件托管的账号，不关闭你平时使用的 QQ 客户端。'))render(await call('stop-login'))});
 action('pause',async()=>render(await call('pause')));
