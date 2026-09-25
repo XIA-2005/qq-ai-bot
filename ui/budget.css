@@ -1,0 +1,30 @@
+.budget-panel input[type="text"] {
+  max-width: 16rem;
+}
+.budget-panel .actions {
+  margin: 1rem 0;
+}
+.budget-status,
+#budget-home {
+  color: #8d641d;
+}
+.budget-panel .callout {
+  line-height: 1.65;
+}
+#budget-status {
+  font-weight: 650;
+}
+#budget-home {
+  display: block;
+  margin-top: 0.5rem;
+}
+#budget-warning:not([hidden]) {
+  margin: 0.7rem 0;
+}
+#runtime-package-path {
+  overflow-wrap: anywhere;
+}
+.proactive-groups-container small {
+  display: block;
+  margin: 4px 0 8px;
+}

@@ -1,0 +1,20 @@
+node_modules/
+dist/
+release/
+*.log
+.env*
+settings*.json
+artifacts/
+
+# Build output: electron-builder writes one ~660MB tree per version.
+release-v*/
+
+# Bundled third-party runtime and its download cache, restored by scripts, not source.
+vendor/
+vendor-downloads/
+
+# Local exported conversation history is private and must never enter Git.
+chat-history.*
+
+# Stray file created by a Windows redirect to the NUL device.
+nul

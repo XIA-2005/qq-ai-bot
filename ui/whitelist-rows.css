@@ -1,0 +1,27 @@
+.whitelist-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;align-items:stretch}
+.whitelist-editor{display:flex;flex-direction:column;height:100%;min-width:0;margin:0;padding:16px;border:1px solid var(--line);border-radius:8px;background:#f8faf6;box-sizing:border-box}
+.whitelist-editor legend{padding:0 7px;font-weight:600}
+.whitelist-editor>small{display:flex;align-items:flex-start;color:var(--muted);margin:0 0 12px;min-height:38px;line-height:1.45;box-sizing:border-box}
+.whitelist-list{display:grid;gap:9px;max-height:425px;overflow-y:auto;padding:3px;flex:1 1 auto;align-content:start}
+.whitelist-row{display:grid;grid-template-columns:20px minmax(0,1fr) auto;gap:7px;align-items:center}
+.whitelist-row input{width:100%;min-width:0;margin:0;font-variant-numeric:tabular-nums}
+.whitelist-row .row-number{font-size:11px;color:var(--muted);text-align:center}
+.whitelist-row .remove-row{padding:5px 8px;font-size:12px;white-space:nowrap}
+.whitelist-footer{display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-top:auto;padding-top:12px}
+.whitelist-footer .add-row{padding:6px 12px;font-size:12px}
+.whitelist-footer small{font-size:11px}
+.whitelist-footer button:disabled{cursor:not-allowed}
+.badge.waiting{background:#f4ebd4;color:#856b2e}
+@media(max-width:1000px){.whitelist-grid{grid-template-columns:1fr}}
+
+.proactive-groups-container{margin:14px 0}
+.proactive-groups-container>label{font-weight:600;display:block}
+.proactive-editor{min-width:0;margin:6px 0 0;padding:12px;border:1px solid var(--line);border-radius:8px;background:#f8faf6;box-sizing:border-box}
+.proactive-editor .whitelist-list{max-height:240px;display:grid;gap:8px;padding:2px}
+.proactive-editor .whitelist-entry{padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:#fff;box-sizing:border-box}
+.proactive-editor .row-proactive-summary{display:block;font-size:11px;color:var(--muted);margin:4px 0 0 27px;min-height:16px;line-height:1.6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.proactive-editor .row-proactive-summary.warning{color:#b45309;font-weight:500}
+.proactive-editor .whitelist-footer{margin-top:8px;padding-top:8px}
+.proactive-editor input:disabled,.proactive-editor button:disabled{opacity:0.55;cursor:not-allowed}
+
+.proactive-editor.disabled{opacity:0.65}

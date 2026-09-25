@@ -1,0 +1,8 @@
+{
+  "toolRoot": "<å·¥å·ç®å½>\\computer-use",
+  "invocation": "powershell.exe -NoProfile -File <script> <arguments>",
+  "transport": "Existing ShunCode MCP run_command; not a new MCP server",
+  "defaultTarget": "QQ AI Bot",
+  "foregroundActionsRequireConfirmation": true,
+  "fullScreenCaptureAllowedByDefault": false
+}

@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light">
+<title>用量后台 · QQ AI Bot</title>
+<link rel="stylesheet" href="/dashboard.css">
+<link rel="icon" href="/icon-192.png">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark">统</span>
+    <div>
+      <h1>用量后台</h1>
+      <p id="updated">正在载入…</p>
+    </div>
+  </div>
+  <div class="toolbar">
+    <label class="auto"><input type="checkbox" id="auto" checked> 自动刷新</label>
+    <button type="button" id="refresh" class="btn">刷新</button>
+  </div>
+</header>
+
+<section id="gate" class="gate hidden"><p id="gate-text"></p></section>
+
+<main id="main" class="hidden">
+  <div id="warnings"></div>
+
+  <section class="cards">
+    <article class="card wide"><h2>累计估算金额</h2><strong id="kpi-total">—</strong><p id="period"></p></article>
+    <article class="card"><h2>调用次数</h2><strong id="kpi-calls">—</strong></article>
+    <article class="card"><h2>累计 Token</h2><strong id="kpi-tokens">—</strong></article>
+    <article class="card"><h2>用量不完整</h2><strong id="kpi-unknown">—</strong></article>
+    <article class="card"><h2>在途请求</h2><strong id="kpi-inflight">—</strong></article>
+    <article class="card"><h2>已记录模型</h2><strong id="kpi-models">—</strong></article>
+  </section>
+
+  <p class="note" id="pricing"></p>
+  <p class="note">全部金额为本软件按 Token 与单价的估算，非实际账单；不自动判断高峰/空闲/节假日优惠，也不代表提供方的实际扣款。</p>
+
+  <div class="ranges">
+    <span>时间范围</span>
+    <button type="button" class="chip" data-range="today">今天</button>
+    <button type="button" class="chip active" data-range="7d">近 7 天</button>
+    <button type="button" class="chip" data-range="30d">近 30 天</button>
+    <button type="button" class="chip" data-range="all">全部</button>
+  </div>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>用量趋势</h2>
+      <select id="trend-mode" aria-label="趋势粒度">
+        <option value="day">按天</option>
+        <option value="hour">按小时</option>
+      </select>
+    </div>
+    <div id="chart" class="chart"></div>
+    <div class="scroll">
+      <table><thead><tr><th>时间</th><th class="r">估算金额</th><th class="r">调用</th><th class="r">输入 Token</th><th class="r">输出 Token</th></tr></thead><tbody id="trend-body"></tbody></table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>按模型拆分</h2>
+    <div id="model-bars" class="bars"></div>
+    <div class="scroll">
+      <table><thead><tr><th>模型</th><th class="r">估算金额</th><th class="r">调用</th><th class="r">输入 Token</th><th class="r">输出 Token</th><th class="r">缓存命中率</th><th class="r">不完整</th></tr></thead><tbody id="model-body"></tbody></table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>按用途拆分</h2>
+    <div class="scroll">
+      <table><thead><tr><th>用途</th><th class="r">估算金额</th><th class="r">调用</th><th class="r">输入 Token</th><th class="r">输出 Token</th><th class="r">不完整</th></tr></thead><tbody id="cat-body"></tbody></table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>按对象拆分</h2>
+    <div class="scroll">
+      <table><thead><tr><th>对象</th><th class="r">聊天金额</th><th class="r">聊天次数</th><th class="r">试聊金额</th><th class="r">试聊次数</th></tr></thead><tbody id="target-body"></tbody></table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>逐次调用明细 <span id="event-count" class="muted"></span></h2>
+      <div class="panel-actions">
+        <select id="event-kind" aria-label="用途筛选">
+          <option value="all">全部用途</option>
+          <option value="chat">真实聊天</option>
+          <option value="preview">独立试聊</option>
+          <option value="verification">手动验证</option>
+          <option value="persona">人设提炼</option>
+        </select>
+        <button type="button" id="export" class="btn">导出 CSV</button>
+      </div>
+    </div>
+    <p class="note">最多保留最近 2000 条调用；表格显示前 300 条，导出包含当前筛选的全部条目。明细不含聊天正文与 API Key。</p>
+    <div class="scroll">
+      <table><thead><tr><th>时间</th><th>模型</th><th>用途</th><th>对象</th><th class="r">输入</th><th class="r">输出</th><th class="r">估算金额</th><th>状态</th></tr></thead><tbody id="event-body"></tbody></table>
+    </div>
+  </section>
+</main>
+<script src="/dashboard.js"></script>
+</body>
+</html>

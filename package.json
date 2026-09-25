@@ -1,0 +1,82 @@
+{
+  "name": "qq-ai-bot",
+  "productName": "QQ AI Bot",
+  "version": "0.9.2",
+  "private": true,
+  "description": "Local QQ AI assistant with DeepSeek",
+  "author": "QQ AI Bot contributors",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "node scripts/clean-dist.cjs && tsc",
+    "start": "npm run build && node scripts/launch.cjs",
+    "test": "npm run build && node --test tests/*.test.cjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "check:browser-assets": "node scripts/check-browser-assets.cjs",
+    "lint:staged": "eslint --config eslint.config.cjs tests/p2-*.test.cjs tests/p2-*.browser.cjs scripts/check-browser-assets.cjs scripts/write-release-report.cjs",
+    "format:check:staged": "prettier --end-of-line auto --check src/budget.ts src/idempotency.ts src/tracked-model.ts src/ipc-input.ts tests/p2-*.test.cjs tests/p2-*.browser.cjs scripts/check-browser-assets.cjs scripts/write-release-report.cjs eslint.config.cjs ui/budget.css docs/current-release.md .github/workflows/offline-ci.yml",
+    "ci:offline": "npm run typecheck && npm run check:browser-assets && npm run lint:staged && npm run format:check:staged && npm test",
+    "test:browser": "npm run build && node --test tests/*.browser.cjs",
+    "manifest:legacy": "node scripts/write-launcher-manifest.cjs artifacts/mcp-secure-remote/packaged/win-unpacked",
+    "preflight:runtime": "node scripts/preflight-runtime.cjs",
+    "pack:win": "npm run preflight:runtime && npm run build && electron-builder --win dir --x64 --config.electronDist=node_modules/electron/dist && node scripts/write-launcher-manifest.cjs && node scripts/write-release-report.cjs",
+    "release:report": "node scripts/write-release-report.cjs",
+    "dist:win": "npm run build && electron-builder --win nsis --x64 --config.electronDist=node_modules/electron/dist"
+  },
+  "dependencies": {
+    "qrcode": "^1.5.4",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@electron/asar": "3.4.1",
+    "@types/node": "^22.0.0",
+    "@types/qrcode": "^1.5.6",
+    "@types/ws": "^8.18.1",
+    "electron": "^40.0.0",
+    "electron-builder": "^26.0.12",
+    "eslint": "^9.35.0",
+    "playwright-core": "^1.57.0",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.2"
+  },
+  "build": {
+    "appId": "com.example.qqaibot",
+    "productName": "QQ AI Bot",
+    "directories": {
+      "output": "release-v0.9.2"
+    },
+    "files": [
+      "dist/**/*.js",
+      "ui/**/*",
+      "mobile/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "target": "nsis",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "artifactName": "QQ-AI-Bot-Setup-${version}.${ext}"
+    },
+    "extraResources": [
+      {
+        "from": "vendor/napcat-runtime",
+        "to": "napcat-runtime",
+        "filter": [
+          "**/*",
+          "!**/*.log"
+        ]
+      },
+      {
+        "from": "THIRD-PARTY-NOTICES.md",
+        "to": "THIRD-PARTY-NOTICES.md"
+      }
+    ]
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}

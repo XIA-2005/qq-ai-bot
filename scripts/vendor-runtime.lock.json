@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "runtime": "NapCatQQ Windows Node runtime v4.18.28 with the locally vetted Node and QQ helper binaries",
+  "minimumFileCount": 700,
+  "note": "This manifest checks critical executables and the bundle's completeness, not the provenance of every third-party file. Only restore the runtime from a trusted distribution; never commit private QQ profiles or tokens.",
+  "criticalSha256": {
+    "node.exe": "7447c4ece014aa41fb2ff866c993c708e5a8213a00913cc2ac5049ea3ffc230d",
+    "index.js": "5de31bef6cc1b48cef0229a8b22b32b3211e41253c3e75a9547e996becf9b388",
+    "napcat/napcat.mjs": "b161061c32acc7724381fbabd2a6ef022892cdb6038aa86c28de552c74c5dde0",
+    "napcat/NapCatWinBootMain.exe": "bd8ec316582bfb25e3b9b7f27a22c91437584f29879950462f789fd7bb111949",
+    "crypto.dll": "b58640bbfa8919ab04460c6af959dc499524ec3bfaa6a992473298e8d25707b7",
+    "ssl.dll": "758af0db60e838d9b33538b5669fe5b95feb1a9c82b7ff42e37258f8eb22810f",
+    "win64/parent-ipc-core-x64.dll": "162426b66a3d063955a61603491453f797ee276aea4570acc6c92e0385e84e71",
+    "win64/SSOShareInfoHelper64.dll": "c3f7b68f0932791cf235dad157a9d240e965ba04fc2d5e920413a9c192607383"
+  }
+}
