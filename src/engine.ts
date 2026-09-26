@@ -13,7 +13,8 @@ import {looksLikeDecision} from './reply-envelope';
 import {LoopGuard} from './loop-guard';
 import {shapeReply} from './shape';
 import type {StatePersister,EngineState} from './persist';
-export interface EngineDeps {prepareMedia?:(refs:MediaReference[],vision:boolean,signal:AbortSignal)=>Promise<PreparedMedia>;/** Load a quoted message that already left the room buffer (OneBot get_msg). */fetchMessage?:(id:string,group:string,signal:AbortSignal)=>Promise<{user:string;text:string;media:MediaReference[]}|null>;generate:(messages:ChatMessage[],signal:AbortSignal,config?:Config,job?:Accepted)=>Promise<string>;/** May resolve to the QQ ids of the bubbles it sent, so a later quote of one can be matched. */send:(job:Accepted,text:string,signal:AbortSignal)=>Promise<void|unknown[]>;log:(message:string)=>void;change:()=>void;react?:(job:Accepted,emojiId:string)=>Promise<boolean>;/** Something the owner should hear about now (budget, loops, repeated failures); the app forwards it to the admin. */notify?:(kind:string,text:string)=>void;/** Room context + per-user memory survive restarts through this (debounced) snapshot. */persist?:StatePersister}
+import {decorateMessages,Decoration} from './persona-layer';
+export interface EngineDeps {prepareMedia?:(refs:MediaReference[],vision:boolean,signal:AbortSignal)=>Promise<PreparedMedia>;/** Load a quoted message that already left the room buffer (OneBot get_msg). */fetchMessage?:(id:string,group:string,signal:AbortSignal)=>Promise<{user:string;text:string;media:MediaReference[]}|null>;generate:(messages:ChatMessage[],signal:AbortSignal,config?:Config,job?:Accepted)=>Promise<string>;/** May resolve to the QQ ids of the bubbles it sent, so a later quote of one can be matched. */send:(job:Accepted,text:string,signal:AbortSignal)=>Promise<void|unknown[]>;log:(message:string)=>void;change:()=>void;react?:(job:Accepted,emojiId:string)=>Promise<boolean>;/** Something the owner should hear about now (budget, loops, repeated failures); the app forwards it to the admin. */notify?:(kind:string,text:string)=>void;/** Room context + per-user memory survive restarts through this (debounced) snapshot. */persist?:StatePersister;/** Persona layer: group memory, sticker keywords and own-voice samples for this job (the style tail comes from config). */decor?:(job:Accepted)=>Decoration|undefined;/** Sees every raw group event so the sticker book can learn what the room uses. */learn?:(event:any,now:number)=>void}
 /** In QQ a picture is usually its own message and the "@bot 看看" follows it; a direct @ without images borrows the room's pictures from this long ago. */
 export const RECENT_MEDIA_WINDOW_MS=300_000;
 export class Engine {
@@ -120,6 +121,7 @@ export class Engine {
   if(user===self&&looksLikeDecision(summary.text))return;
   this.context.record(group,{id,user,name:displayName(e.sender)||undefined,text:summary.text,time:now,fromBot:user===self,media:summary.media},now);
   this.persistSoon();
+  try{this.deps.learn?.(e,now);}catch{}
   if(this.guard.observe(group,user,user===self,now)){
    this.deps.log(`群 ${group} 出现机器人与同一账号的快速对话循环，已自动静音 5 分钟`);
    this.deps.notify?.('loop',`群 ${group} 疑似机器人对话循环（连续快速一来一回），已自动静音 5 分钟。`);
@@ -358,6 +360,12 @@ export class Engine {
   if(now-at<60_000&&others===0)return 'none';
   return (job.rawMessageIds?.length||job.rawMessageId)?'quote':'at';
  }
- /** Hook for the persona layer (style tail, memory notes, own-voice samples); phase 2 fills it in. */
- protected decorate(_messages:ChatMessage[],_job:Accepted){}
+ /** Persona layer: group memory + sticker keywords + own-voice samples after the persona, style tail before the last user turn. */
+ private decorate(messages:ChatMessage[],job:Accepted){
+  let d:Decoration|undefined;
+  try{d=this.deps.decor?.(job);}catch(err){this.deps.log('人设层出错，已忽略：'+(err instanceof Error?err.message:'未知错误'));}
+  const tail=(this.config.styleTail||'').trim();
+  if(!d&&!tail)return;
+  decorateMessages(messages,{...(d||{}),tail:tail||undefined});
+ }
 }

@@ -3,6 +3,8 @@ import type { ApiAccount } from './api-account';
 import type { UsageLedger } from './usage-ledger';
 import type { OneBot } from './onebot';
 import type { ControlService } from './control';
+import type { GroupMemory, StickerBook } from './persona-layer';
+import type { Engine } from './engine';
 
 export interface AdminContext {
   store: Store;
@@ -11,6 +13,9 @@ export interface AdminContext {
   usage: UsageLedger;
   bot: OneBot;
   log?: (msg: string) => void;
+  memory?: GroupMemory;
+  engine?: Engine;
+  stickers?: StickerBook;
 }
 
 export class AdminCommandHandler {
@@ -87,7 +92,10 @@ export class AdminCommandHandler {
           '• #暂停 - 暂停自动回复',
           '• #启动 - 恢复自动回复',
           '• #人设 <内容> - 修改或查看全局人设提示词',
-          '• #面板 - 查看已配置的 iPhone 固定远程地址'
+          '• #面板 - 查看已配置的 iPhone 固定远程地址',
+          '• #记忆 <群号> / #记住 <群号> <一句话> / #忘记 <群号> - 查看、追加、清空该群的长期记忆本',
+          '• #静音 <群号> [分钟] / #解除静音 <群号> - 让机器人在该群闭嘴一段时间（默认 30 分钟）',
+          '• #表情包 - 查看机器人学到的表情包关键词'
         ].join('\n');
 
       case '余额':
@@ -214,6 +222,38 @@ export class AdminCommandHandler {
         return `全局人设已更新成功！\n当前人设：\n${arg}`;
       }
 
+      case '记忆': {
+        if (!/^\d{5,16}$/.test(arg)) return '用法：#记忆 <群号>';
+        const text = this.ctx.memory?.get(arg) || '';
+        return text ? `【群 ${arg} 的记忆本】\n${text.slice(0, 1500)}` : `群 ${arg} 还没有记忆本。用 #记住 ${arg} <一句话> 添加。`;
+      }
+      case '记住': {
+        const m = arg.match(/^(\d{5,16})\s+([\s\S]{1,300})$/);
+        if (!m) return '用法：#记住 <群号> <一句话>';
+        this.ctx.memory?.append(m[1], m[2]);
+        return `已写入群 ${m[1]} 的记忆本：${m[2].trim()}`;
+      }
+      case '忘记': {
+        if (!/^\d{5,16}$/.test(arg)) return '用法：#忘记 <群号>';
+        this.ctx.memory?.clear(arg);
+        return `已清空群 ${arg} 的记忆本。`;
+      }
+      case '静音': {
+        const m = arg.match(/^(\d{5,16})(?:\s+(\d{1,4}))?$/);
+        if (!m) return '用法：#静音 <群号> [分钟]';
+        const minutes = m[2] ? Number(m[2]) : 30;
+        this.ctx.engine?.guard.mute(m[1], Date.now(), minutes * 60_000);
+        return `群 ${m[1]} 已静音 ${minutes} 分钟（只听不说）。#解除静音 ${m[1]} 可提前恢复。`;
+      }
+      case '解除静音': {
+        if (!/^\d{5,16}$/.test(arg)) return '用法：#解除静音 <群号>';
+        this.ctx.engine?.guard.unmute(arg);
+        return `群 ${arg} 已恢复发言。`;
+      }
+      case '表情包': {
+        const names = this.ctx.stickers?.names(40) || [];
+        return names.length ? `机器人学到的表情包（${this.ctx.stickers?.size ?? names.length} 个）：${names.join('、')}\n人设里可写 [表情包: 关键词] 发送。` : '还没有学到表情包：群里有人发过市场表情后会自动记住。';
+      }
       case '面板':
       case 'web': {
         const publicUrl=this.ctx.store.config.remotePublicUrl;

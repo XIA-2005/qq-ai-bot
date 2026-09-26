@@ -6,16 +6,26 @@ import {typingMs,thinkMs,splitOnBareSpace} from './humanize';
 import {prepareMedia,MediaReference,PreparedMedia} from './media';
 import {looksLikeDecision} from './reply-envelope';
 
-/** Turn a reply line into OneBot segments, converting [表情: 名称] into real QQ faces. */
-export function buildMessageSegments(text:string):{type:string;data:Record<string,string>}[]{
+/** Turn a reply line into OneBot segments, converting [表情: 名称] into real QQ faces and [表情包: 关键词] into learned stickers. */
+export function buildMessageSegments(text:string,resolveSticker?:(name:string)=>{type:string;data:Record<string,string>}|null):{type:string;data:Record<string,string>}[]{
  const segments:{type:string;data:Record<string,string>}[]=[];
  // DeepSeek has occasionally inserted a stray ASCII "s" after the opening
  // bracket (for example [s表情: 疯狂点头]). Treat that narrow typo as the
  // intended marker so it can never leak into QQ as literal control text.
- const re=/\[[sS]?\s*表情[:：]\s*([^\]]{1,20})\]/g;
+ const re=/\[[sS]?\s*(表情包|表情)[:：]\s*([^\]]{1,20})\]/g;
  let last=0;
  for(let m=re.exec(text);m;m=re.exec(text)){
-  const id=faceIdForName(m[1]);
+  let seg:{type:string;data:Record<string,string>}|null=null;
+  if(m[1]==='表情包'){
+   // An unknown sticker keyword is dropped silently: literal "[表情包: x]" would look broken in QQ.
+   seg=resolveSticker?resolveSticker(m[2]):null;
+   const before=text.slice(last,m.index);
+   if(before.trim()||(before&&seg))segments.push({type:'text',data:{text:before}});
+   if(seg)segments.push(seg);
+   last=m.index+m[0].length;
+   continue;
+  }
+  const id=faceIdForName(m[2]);
   // An unknown name stays literal text rather than being silently dropped.
   if(id===null)continue;
   const before=text.slice(last,m.index);
@@ -24,8 +34,9 @@ export function buildMessageSegments(text:string):{type:string;data:Record<strin
   last=m.index+m[0].length;
  }
  const tail=text.slice(last);
- if(tail)segments.push({type:'text',data:{text:tail}});
- return segments.length?segments:[{type:'text',data:{text}}];
+ if(tail.trim()||(tail&&segments.length&&segments[segments.length-1].type!=='mface'))segments.push({type:'text',data:{text:tail}});
+ if(!segments.length){const plain=text.replace(/\[[sS]?\s*表情包[:：][^\]]{1,20}\]/g,'').trim();return plain?[{type:'text',data:{text:plain}}]:[];}
+ return segments;
 }
 
 /**
@@ -101,6 +112,8 @@ export class OneBot{
  onSent?:(id:unknown)=>void;
  /** Off by default so tests and the transport stay deterministic; the app turns it on. */
  humanize=false;
+ /** Turns a [表情包: 关键词] written by the model into a learned mface segment; unset = markers are dropped. */
+ stickerResolver?:(name:string)=>{type:string;data:Record<string,string>}|null;
  /** Restricts get_image local fallback to the managed QQ profile; set by main. */
  readLocalMedia?:((file:string,maxBytes:number,signal:AbortSignal)=>Promise<Buffer>) & {findLocal?:(fileId:string)=>Promise<string|null>};
  /** Overridable so tests can collapse all waiting to zero. */
@@ -185,7 +198,7 @@ export class OneBot{
   const parts=splitReplyMessages(text).filter(part=>!looksLikeDecision(part));
   const ids:unknown[]=[];
   if(!parts.length)return ids;
-  let shown=false;
+  let shown=false,prefixed=false;
   try{
    for(let i=0;i<parts.length;i++){
     signal?.throwIfAborted();
@@ -198,8 +211,11 @@ export class OneBot{
      const wait=this.pace(part,i===0,job.text||'');
      if(wait>0)await sleep(wait,undefined,{signal});
     }
+    const built=buildMessageSegments(part,this.stickerResolver);
+    if(!built.length)continue;   // the bubble was only an unknown sticker marker
     const message:unknown[]=[];
-    if(i===0&&job.group&&!job.proactive&&!job.session){
+    if(!prefixed&&job.group&&!job.proactive&&!job.session){
+     prefixed=true;
      // How a person would address it: nothing when answering right away, a QQ quote when others spoke in
      // between (or the message is old), an @ only when there is nothing to quote.
      const mode=job.address??'at';
@@ -207,7 +223,7 @@ export class OneBot{
      if(mode==='quote'&&quoteId)message.push({type:'reply',data:{id:quoteId}});
      else if(mode==='at'||(mode==='quote'&&!quoteId))message.push({type:'at',data:{qq:job.user}},{type:'text',data:{text:' '}});
     }
-    message.push(...buildMessageSegments(part));
+    message.push(...built);
     signal?.throwIfAborted();
     // Once a frame reaches QQ we cannot retract it; cancellation prevents any later frames.
     const res=await this.call(job.group?'send_group_msg':'send_private_msg',job.group?{group_id:job.group,message}:{user_id:job.user,message},{signal});

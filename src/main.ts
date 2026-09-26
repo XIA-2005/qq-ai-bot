@@ -23,7 +23,7 @@ import {MobileWebServer} from './web-server';
 import {ControlService} from './control';
 import {RemoteAccess} from './remote-access';
 import QRCode from 'qrcode';
-import {Store} from './store';import {Engine} from './engine';import {filePersister} from './persist';import {OneBot} from './onebot';import {validate,Config,ChatMessage,FOLLOWUP_DISCLOSURE_VERSION} from './config';
+import {Store} from './store';import {Engine} from './engine';import {filePersister} from './persist';import {StickerBook,StyleSamples,GroupMemory} from './persona-layer';import {OneBot} from './onebot';import {validate,Config,ChatMessage,FOLLOWUP_DISCLOSURE_VERSION} from './config';
 app.setName('QQ AI Bot');
 if(!app.requestSingleInstanceLock()){app.quit()}else{
  let preview:PreviewSession;let desktop:DesktopService;let account:ApiAccount;let usage:UsageLedger;let budget:BudgetManager;
@@ -35,7 +35,8 @@ if(!app.requestSingleInstanceLock()){app.quit()}else{
  const ui=path.join(__dirname,'../ui/index.html');
  const autoConditions=()=>({connected:!!bot?.connected,enabled:store?.config.autoReplyOnLogin!==false,consented:!!store?.config.autoReplyConsent&&store.config.autoReplyConsentVersion>=FOLLOWUP_DISCLOSURE_VERSION,hasKey:!!store?.key,hasWhitelist:!!store&&hasEnabledTargets(store.config),busy:!!engine?.active||testing||!!personaController});
  const emit=()=>{if(engine&&store&&bot&&auto.consume(autoConditions())){engine.start();log('条件就绪，已自动开启白名单回复');}if(win&&!win.isDestroyed())win.webContents.send('state',snapshot());desktop?.refresh(!!bot?.connected,!!engine?.running,auto.status(autoConditions(),engine?.running||false))};
- let persist:ReturnType<typeof filePersister>|undefined;
+ let persist:ReturnType<typeof filePersister>|undefined;let stickers:StickerBook;let samples:StyleSamples;let notes:GroupMemory;let distilledDay='';
+ const hashSeed=(s:string)=>{let h=2166136261;for(const ch of s){h^=ch.charCodeAt(0);h=Math.imul(h,16777619);}return h>>>0;};
  const notifiedAt=new Map<string,number>();
  /** Tell the owner in QQ about things that need a person (budget, loops, repeated failures, disconnects). One message per kind per 30 minutes; never throws. */
  const notifyAdmin=(kind:string,text:string)=>{
@@ -59,7 +60,18 @@ if(!app.requestSingleInstanceLock()){app.quit()}else{
   budget=new BudgetManager(app.getPath('userData'),usage,emit);
   account=new ApiAccount(app.getPath('userData'),emit);account.configure(store.config,store.key);
   persist=filePersister(app.getPath('userData'));
-  engine=new Engine(store.config,{persist,notify:(kind,text)=>notifyAdmin(kind,text),prepareMedia:(refs,vision,signal)=>bot.prepareMedia(refs,vision,signal),fetchMessage:(id,group,signal)=>bot.fetchMessage(id,group,signal),generate:(messages,signal,config,job)=>trackedComplete(config||store.config,store.key,messages,signal,{kind:'chat',target:job?(job.group?'g:'+job.group:'p:'+job.user):undefined}),send:(j,t,signal)=>bot.send(j,t,300,signal),react:(j,emoji)=>bot.react(j.rawMessageId||'',emoji),log,change:emit});
+  stickers=new StickerBook(app.getPath('userData'));samples=new StyleSamples(app.getPath('userData'));notes=new GroupMemory(app.getPath('userData'));
+  engine=new Engine(store.config,{persist,notify:(kind,text)=>notifyAdmin(kind,text),
+   decor:job=>{
+    if(!job.group)return undefined;
+    const c=store.config;
+    return {
+     memory:notes.get(job.group)||undefined,
+     stickerNames:c.stickersEnabled&&!job.proactive&&!job.followup?stickers.names(20):undefined,
+     samples:c.styleSamplesEnabled&&!job.followup&&samples.available?samples.pick(job.text,job.proactive?4:8,hashSeed(job.messageId)):undefined
+    };
+   },
+   learn:(e,now)=>{if(store.config.stickersEnabled&&Array.isArray(e?.message))for(const seg of e.message)stickers.learn(seg,now);},prepareMedia:(refs,vision,signal)=>bot.prepareMedia(refs,vision,signal),fetchMessage:(id,group,signal)=>bot.fetchMessage(id,group,signal),generate:(messages,signal,config,job)=>trackedComplete(config||store.config,store.key,messages,signal,{kind:'chat',target:job?(job.group?'g:'+job.group:'p:'+job.user):undefined}),send:(j,t,signal)=>bot.send(j,t,300,signal),react:(j,emoji)=>bot.react(j.rawMessageId||'',emoji),log,change:emit});
   bot=new OneBot(e=>{
    void(async()=>{
     try{if(adminHandler&&await adminHandler.handleEvent(e,bot.self))return;}catch(err){log(`管理员指令异常: ${err instanceof Error?err.message:String(err)}`);}
@@ -68,6 +80,7 @@ if(!app.requestSingleInstanceLock()){app.quit()}else{
   },emit,()=>engine.pause(),log,()=>{try{memory.record(bot.self)}catch{log('无法保存自动登录账号，请检查本机目录权限');}auto.connected();emit()});
   bot.readLocalMedia=mediaFileReader(path.join(app.getPath('userData'),'qq-profile'));
   bot.humanize=true;
+  bot.stickerResolver=name=>{if(!store.config.stickersEnabled)return null;const s=stickers.find(name);return s?StickerBook.segment(s) as {type:string;data:Record<string,string>}:null;};
   bot.onSent=id=>engine.selfMessages.add(id);
   preview=new PreviewSession((c,key,messages,signal,target)=>trackedWithUsage(c,key,messages,signal,{kind:'preview',target:target?(target.kind==='group'?'g:':'p:')+target.id:undefined}),emit);
   control=new ControlService({store,engine,account,usage,bot},{
@@ -79,7 +92,23 @@ if(!app.requestSingleInstanceLock()){app.quit()}else{
    log,
    audit:entry=>remoteAccess.audit(entry)
   });
-  adminHandler=new AdminCommandHandler({store,control,account,usage,bot,log});
+  adminHandler=new AdminCommandHandler({store,control,account,usage,bot,log,memory:notes,engine,stickers});
+  // Nightly memory distillation (opt-in): once a day at 03:00, each group that talked in the last 24 h gets its notes rewritten by the model.
+  const nightly=()=>{
+   try{
+    if(!store.config.memoryAutoDistill||!store.key||!engine.running)return;
+    const now=new Date();const day=now.toISOString().slice(0,10);
+    if(now.getHours()!==3||distilledDay===day)return;
+    distilledDay=day;
+    for(const group of store.config.groups){
+     const lines=engine.context.recent(group,Date.now()).map(l=>({speaker:l.fromBot?'机器人':(l.name||'成员'),text:l.text}));
+     if(lines.length<5)continue;
+     const messages=GroupMemory.distillMessages(notes.get(group),lines);
+     void trackedComplete({...store.config,maxTokens:1024},store.key,messages,new AbortController().signal,{kind:'chat',target:'g:'+group}).then(text=>{if(text&&text.trim())notes.set(group,text.trim().slice(0,6000));log(`群 ${group} 的记忆本已在夜间更新`);}).catch(e=>log('夜间记忆整理失败：'+(e instanceof Error?e.message:'未知错误')));
+    }
+   }catch{}
+  };
+  if(typeof setInterval==='function'){const t=setInterval(nightly,10*60_000) as any;if(t&&typeof t.unref==='function')t.unref();}
   webServer=new MobileWebServer({control,access:remoteAccess,getPublicUrl:()=>store.config.remotePublicUrl,log},{port:5188,host:'127.0.0.1'});
   const isTestRunner=typeof process!=='undefined'&&(Boolean(process.env?.NODE_TEST_CONTEXT)||process.env?.NODE_ENV==='test'||(Array.isArray(process.argv)&&process.argv.some(a=>a.includes('test')||a.includes('.test.'))));
   if(!isTestRunner)void webServer.start().catch(err=>log(`移动端控制面板启动异常: ${err instanceof Error?err.message:String(err)}`));
