@@ -1,7 +1,7 @@
 {
   "name": "qq-ai-bot",
   "productName": "QQ AI Bot",
-  "version": "0.9.3",
+  "version": "0.9.4",
   "private": true,
   "description": "Local QQ AI assistant with DeepSeek",
   "author": "QQ AI Bot contributors",
@@ -43,7 +43,7 @@
     "appId": "com.example.qqaibot",
     "productName": "QQ AI Bot",
     "directories": {
-      "output": "release-v0.9.3"
+      "output": "release-v0.9.4"
     },
     "files": [
       "dist/**/*.js",
