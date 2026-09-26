@@ -20,8 +20,8 @@ $('confirm-no').onclick=()=>finish(false);$('confirm-yes').onclick=()=>finish(tr
 function ensureSavedApi(){if($('key').value.trim()||$('baseUrl').value!==currentConfig.baseUrl||$('modelId').value!==currentConfig.model)throw new Error('密钥或模型接口有未保存的修改，请先保存模型设置。');}
 const accountUI=AccountUI.mount({call,notice,ensureSaved:ensureSavedApi});
 const usageUI=UsageUI.mount({call,notice,confirm:confirmAction,getEditors:()=>whitelistEditors});
-function render(s){
- const runtime=s.runtimePackage||{};$('package-runtime').textContent=runtime.version||'开发版';$('runtime-package-version').textContent=`${runtime.packaged?'打包运行':'开发运行'} · ${runtime.version||'开发版'}`;$('runtime-package-path').textContent=runtime.path||'未提供运行路径';
+let historyTick=0;function render(s){if(++historyTick%10===1)renderPersonaHistory().catch(()=>{});
+ const runtime=s.runtimePackage||{};$('package-runtime').textContent=runtime.version||'开发版';$('runtime-package-version').textContent=`${runtime.packaged?'打包运行':'开发运行'} · ${runtime.version||'开发版'}`;$('runtime-package-path').textContent=runtime.path||'未提供运行路径';renderUpdate(s.update);
   $('runtime-intro').textContent=runtime.externalRuntime?`此安装器不附带 NapCat/QQ 组件。请将你自行取得、可合法使用的运行时放到 ${runtime.runtimeDir||'本机应用数据目录'}，彻底退出后重开；登录前会再次校验哈希。`:'运行时随完整包提供；无需填写 OneBot 令牌。';
  accountUI.render(s);usageUI.render(s);
  workspaceUI.render(s);
@@ -75,6 +75,13 @@ $('persona-file').onchange=async()=>{try{const file=$('persona-file').files[0];i
 action('persona-generate',async()=>{const text=$('persona-source').value,target=$('persona-target').value;if(text.trim().length<50||text.length>60000||!target.trim())throw new Error('请填写目标角色，以及 50–60000 字符的素材');const count=Math.ceil(text.trim().length/6000)+1;if(!await confirmAction('生成全局人设草稿？',`将暂停回复，并把素材发送至 DeepSeek，预计 ${count} 次请求，可能计费。请确认有权使用，已移除隐私。现有系统提示词不会改变。`))return;const result=await call('distill-persona',{text,target,confirm:true});$('persona-draft').value=result.draft;notice('草稿已生成，尚未应用。请检查、编辑后确认。')});
 action('persona-cancel',async()=>{await call('cancel-persona');notice('已请求取消，等待当前请求结束；原提示词不变。')});
 action('persona-apply',async()=>{const prompt=$('persona-draft').value;if(!prompt.trim())throw new Error('请先生成或填写人设草稿');if(await confirmAction('应用为全局人设？','将更新继承全局人设的会话，备份上一版，只清理受影响的记忆并暂停回复。独立人设不被覆盖。模型设置中尚未保存的修改不会一并保存。')){fill(await call('apply-persona',{prompt,confirm:true}));notice('全局人设已应用，上一版已备份；可手动开启回复。')}});
+function renderUpdate(u){if(!u||!$('update-status'))return;$('update-status').textContent=u.message||'尚未检查';const inst=$('update-install');inst.hidden=u.status!=='available';$('update-check').disabled=u.status==='checking'||u.status==='downloading';inst.disabled=u.status==='downloading';}
+action('update-check',async()=>{renderUpdate(await call('check-update'))});
+action('update-install',async()=>{if(await confirmAction('下载并安装新版本？','将从 GitHub 下载压缩包并校验 SHA-256，解压到当前包旁边的新目录。不会改动正在运行的包；安装完成后退出软件，用 启动机器人.exe 重新启动即可。')){renderUpdate(await call('install-update',{confirm:true}))}});
+async function renderPersonaHistory(){const box=$('persona-history');if(!box)return;const r=await call('persona-history');box.replaceChildren();for(const v of r.items||[]){const row=document.createElement('div');row.className='log-row';const t=document.createElement('span');t.className='muted';t.textContent=new Date(v.time).toLocaleString('zh-CN',{hour12:false})+' · '+v.chars+' 字';const p=document.createElement('span');p.textContent=v.head;const b=document.createElement('button');b.className='text-btn';b.textContent='回滚';b.onclick=async()=>{if(await confirmAction('回滚到这一版人设？','当前人设会先存入历史，再应用所选版本；会暂停回复并清理受影响的记忆。')){fill(await call('persona-rollback',{index:v.index,confirm:true}));notice('已回滚人设，回复已暂停。');await renderPersonaHistory()}};row.append(t,p,b);box.appendChild(row)}if(!(r.items||[]).length){const e=document.createElement('p');e.className='muted';e.textContent='还没有历史版本：每次应用或保存新的全局人设时，被替换的那一版会记在这里。';box.appendChild(e)}}
+action('persona-export',async()=>{const r=await call('persona-export');notice(r.saved?'已导出到 '+r.path:'已取消')});
+action('persona-import',async()=>{const r=await call('persona-import',{});if(!r.imported)return;$('persona-draft').value=r.prompt;notice('已读入草稿（'+r.prompt.length+' 字），检查后点「确认应用为全局人设」。')});
+action('export-diagnostics',async()=>{const r=await call('export-diagnostics');$('diag-result').textContent='已导出：'+r.dir});
 action('persona-restore',async()=>{if(await confirmAction('恢复上一个提示词？','会暂停回复并清理受影响的记忆，独立人设不变；当前提示词将成为新的备份。')){fill(await call('restore-persona',{confirm:true}));notice('已恢复上一版提示词，回复已暂停。')}});
 action('persona-clear',async()=>{if(await confirmAction('清空素材和草稿？','仅清空窗口中的素材、目标和草稿，不改变已应用的人设。')){$('persona-source').value='';$('persona-draft').value='';$('persona-target').value='';$('persona-source').oninput();notice('素材和草稿已清空。')}});
 

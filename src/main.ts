@@ -1,4 +1,7 @@
-import {app,BrowserWindow,ipcMain,shell,session} from 'electron';
+import {app,BrowserWindow,ipcMain,shell,session,net,dialog} from 'electron';
+import {FileLog,exportDiagnostics} from './diagnostics';
+import {PersonaHistory} from './persona-history';
+import {checkForUpdate,installUpdate,releaseRoot,UpdateInfo} from './updater';
 import path from 'node:path';
 import fs from 'node:fs';
 import {matchesUiUrl} from './ipc-origin';
@@ -35,6 +38,9 @@ if(!app.requestSingleInstanceLock()){app.quit()}else{
  const ui=path.join(__dirname,'../ui/index.html');
  const autoConditions=()=>({connected:!!bot?.connected,enabled:store?.config.autoReplyOnLogin!==false,consented:!!store?.config.autoReplyConsent&&store.config.autoReplyConsentVersion>=FOLLOWUP_DISCLOSURE_VERSION,hasKey:!!store?.key,hasWhitelist:!!store&&hasEnabledTargets(store.config),busy:!!engine?.active||testing||!!personaController});
  const emit=()=>{if(engine&&store&&bot&&auto.consume(autoConditions())){engine.start();log('条件就绪，已自动开启白名单回复');}if(win&&!win.isDestroyed())win.webContents.send('state',snapshot());desktop?.refresh(!!bot?.connected,!!engine?.running,auto.status(autoConditions(),engine?.running||false))};
+ let fileLog:FileLog|undefined;let personaHistory:PersonaHistory;let disconnectedAt=0;
+ let updateState:{status:'idle'|'checking'|'none'|'available'|'downloading'|'installed'|'error';message:string;info?:UpdateInfo;dir?:string}={status:'idle',message:'尚未检查'};
+ const fetchLike=(url:string,init?:{headers?:Record<string,string>;signal?:AbortSignal})=>net.fetch(url,init as any) as any;
  let persist:ReturnType<typeof filePersister>|undefined;let stickers:StickerBook;let samples:StyleSamples;let notes:GroupMemory;let distilledDay='';
  const hashSeed=(s:string)=>{let h=2166136261;for(const ch of s){h^=ch.charCodeAt(0);h=Math.imul(h,16777619);}return h>>>0;};
  const notifiedAt=new Map<string,number>();
@@ -47,8 +53,8 @@ if(!app.requestSingleInstanceLock()){app.quit()}else{
    for(const id of store?.config.adminIds||[])void bot.call('send_private_msg',{user_id:Number(id)||id,message:[{type:'text',data:{text:'【QQ AI Bot】'+text}}]}).catch(()=>{});
   }catch{}
  };
- const log=(message:string)=>{logs.unshift({time:new Date().toLocaleTimeString('zh-CN',{hour12:false}),message});logs.splice(150);emit()};
- const snapshot=()=>({runtimePackage:{version:app.getVersion?.()||'开发版',path:process.execPath||'',packaged:!!app.isPackaged,externalRuntime,runtimeDir},usage:usage?.view,budget:budget?.view,preview:preview?.view,desktop:desktop?.view,remoteAccess:remoteAccess?.view(store?.config.remotePublicUrl),autoReplyStatus:auto.status(autoConditions(),engine?.running||false),loginMemory:memory?.view,persona:{busy:!!personaController,...personaProgress},running:engine?.running||false,connected:bot?.connected||false,qqStatus:bot?.status||'未连接',self:bot?.self||'',modelState:testing?'验证中':account?.view.model.status||'未配置 API Key',apiAccount:account?.view,sent:engine?.sent||0,errors:engine?.errors||0,pending:engine?.pending||0,active:engine?.active||false,activeCount:engine?.activeCount||0,merging:engine?.merging||0,merged:engine?.merged||0,expired:engine?.expired||0,sessions:engine?.sessions||0,groupSessions:engine?.groupSessions||[],login:login?.state||{phase:'idle',message:'',qr:'',available:false},logs});
+ const log=(message:string)=>{fileLog?.write(message);logs.unshift({time:new Date().toLocaleTimeString('zh-CN',{hour12:false}),message});logs.splice(150);emit()};
+ const snapshot=()=>({runtimePackage:{version:app.getVersion?.()||'开发版',path:process.execPath||'',packaged:!!app.isPackaged,externalRuntime,runtimeDir},update:updateState,usage:usage?.view,budget:budget?.view,preview:preview?.view,desktop:desktop?.view,remoteAccess:remoteAccess?.view(store?.config.remotePublicUrl),autoReplyStatus:auto.status(autoConditions(),engine?.running||false),loginMemory:memory?.view,persona:{busy:!!personaController,...personaProgress},running:engine?.running||false,connected:bot?.connected||false,qqStatus:bot?.status||'未连接',self:bot?.self||'',modelState:testing?'验证中':account?.view.model.status||'未配置 API Key',apiAccount:account?.view,sent:engine?.sent||0,errors:engine?.errors||0,pending:engine?.pending||0,active:engine?.active||false,activeCount:engine?.activeCount||0,merging:engine?.merging||0,merged:engine?.merged||0,expired:engine?.expired||0,sessions:engine?.sessions||0,groupSessions:engine?.groupSessions||[],login:login?.state||{phase:'idle',message:'',qr:'',available:false},logs});
  const trackedWithUsage=(c:Config,key:string,messages:ChatMessage[],signal:AbortSignal,context:UsageContext)=>trackedModel(c,key,messages,signal,context,{account,usage,budget,complete:completeWithUsage});
  const trackedComplete=async(c:Config,key:string,messages:ChatMessage[],signal:AbortSignal,context:UsageContext)=>(await trackedWithUsage(c,key,messages,signal,context)).text;
  const viewConfig=()=>({desktop:desktop?.view,remoteAccess:remoteAccess?.view(store.config.remotePublicUrl),config:store.config,loginMemory:memory.view,hasKey:!!store.key,hasToken:!!store.token,warning:store.warning});
@@ -59,6 +65,7 @@ if(!app.requestSingleInstanceLock()){app.quit()}else{
   usage=new UsageLedger(app.getPath('userData'),emit);
   budget=new BudgetManager(app.getPath('userData'),usage,emit);
   account=new ApiAccount(app.getPath('userData'),emit);account.configure(store.config,store.key);
+  fileLog=new FileLog(app.getPath('userData'));personaHistory=new PersonaHistory(app.getPath('userData'));
   persist=filePersister(app.getPath('userData'));
   stickers=new StickerBook(app.getPath('userData'));samples=new StyleSamples(app.getPath('userData'));notes=new GroupMemory(app.getPath('userData'));
   engine=new Engine(store.config,{persist,notify:(kind,text)=>notifyAdmin(kind,text),
@@ -77,7 +84,9 @@ if(!app.requestSingleInstanceLock()){app.quit()}else{
     try{if(adminHandler&&await adminHandler.handleEvent(e,bot.self))return;}catch(err){log(`管理员指令异常: ${err instanceof Error?err.message:String(err)}`);}
     engine.selfName=bot.selfName;engine.receive(e,bot.self);
    })();
-  },emit,()=>engine.pause(),log,()=>{try{memory.record(bot.self)}catch{log('无法保存自动登录账号，请检查本机目录权限');}auto.connected();emit()});
+  },emit,()=>{engine.pause();if(!disconnectedAt)disconnectedAt=Date.now();},log,()=>{try{memory.record(bot.self)}catch{log('无法保存自动登录账号，请检查本机目录权限');}
+   if(disconnectedAt&&Date.now()-disconnectedAt>5*60_000)setTimeout(()=>notifyAdmin('reconnect',`QQ 连接刚刚恢复，此前断开了 ${Math.round((Date.now()-disconnectedAt)/60000)} 分钟；期间的消息没有回复。`),3000);
+   disconnectedAt=0;auto.connected();emit()});
   bot.readLocalMedia=mediaFileReader(path.join(app.getPath('userData'),'qq-profile'));
   bot.humanize=true;
   bot.stickerResolver=name=>{if(!store.config.stickersEnabled)return null;const s=stickers.find(name);return s?StickerBook.segment(s) as {type:string;data:Record<string,string>}:null;};
@@ -87,7 +96,7 @@ if(!app.requestSingleInstanceLock()){app.quit()}else{
    isBusy:()=>!!engine.active||testing||!!personaController,
    arm:()=>auto.arm(),
    pauseSideEffects:()=>{preview?.cancel();auto.suspend();personaController?.abort();engine.pause();testController?.abort();},
-   applyConfig:c=>{store.save(c,store.key,store.token);engine.updateConfig(c);preview?.sync(c);},
+   applyConfig:c=>{if(c.prompt!==store.config.prompt)personaHistory.record(store.config.prompt,'replaced');store.save(c,store.key,store.token);engine.updateConfig(c);preview?.sync(c);},
    snapshot,
    log,
    audit:entry=>remoteAccess.audit(entry)
@@ -144,6 +153,7 @@ if(!app.requestSingleInstanceLock()){app.quit()}else{
    if(newlyProactive(store.config,c)&&input?.confirmProactive!==true)throw new Error('请确认允许这些群主动接话及相应模型费用');
    if(c.visionEnabled&&!store.config.visionEnabled&&input?.confirmVision!==true)throw new Error('请确认白名单图片将发送到 DeepSeek 并可能计费');
    const apiChanged=key!==store.key||c.baseUrl!==store.config.baseUrl||c.model!==store.config.model;
+   if(c.prompt!==store.config.prompt)personaHistory.record(store.config.prompt,'replaced');
    store.save(c,key,store.token);
    // Store writes are synchronous; suppress a previously queued auto-start until Engine sees the new config.
    auto.suspend();
@@ -204,6 +214,46 @@ if(!app.requestSingleInstanceLock()){app.quit()}else{
   handler('preview-clear',()=>{preview.clear();preview.sync(store.config);return preview.view});
   handler('desktop-settings',x=>{const result=desktop.save(x);emit();return result});
   handler('hide-to-tray',()=>{if(!desktop.view.trayAvailable)throw new Error('系统托盘不可用');win?.hide();return snapshot()});
+  handler('export-diagnostics',()=>{
+   const dir=exportDiagnostics(app.getPath('userData'),{version:app.getVersion?.()||'开发版',execPath:process.execPath,packaged:!!app.isPackaged,platform:process.platform,electron:process.versions.electron,node:process.versions.node,
+    config:{...store.config},engine:{running:engine.running,sent:engine.sent,errors:engine.errors,ignored:engine.ignored,merged:engine.merged,expired:engine.expired,sessions:engine.sessions,groupSessions:engine.groupSessions,connected:bot.connected,self:bot.self?'(set)':'',status:bot.status},recentLogs:logs.slice(0,150)});
+   log('诊断包已导出到 '+dir);void shell.openPath(dir);return {dir};
+  });
+  handler('persona-history',()=>({items:personaHistory.list()}));
+  handler('persona-rollback',x=>{if(x?.confirm!==true)throw new Error('请确认回滚人设');const v=personaHistory.get(Number(x?.index));if(!v)throw new Error('没有这个历史版本');return applyPrompt(personaPrompt(v.prompt))});
+  handler('persona-export',async()=>{
+   const r=await dialog.showSaveDialog(win!,{title:'导出人设',defaultPath:'qq-ai-bot-persona-'+new Date().toISOString().slice(0,10)+'.json',filters:[{name:'JSON',extensions:['json']}]});
+   if(r.canceled||!r.filePath)return {saved:false};
+   fs.writeFileSync(r.filePath,JSON.stringify(PersonaHistory.toFile(store.config.prompt),null,1),'utf8');log('人设已导出（不含任何密钥）');return {saved:true,path:r.filePath};
+  });
+  handler('persona-import',async x=>{
+   const r=await dialog.showOpenDialog(win!,{title:'导入人设',properties:['openFile'],filters:[{name:'人设文件',extensions:['json','txt','md']}]});
+   if(r.canceled||!r.filePaths.length)return {imported:false};
+   const stat=fs.statSync(r.filePaths[0]);if(stat.size>512*1024)throw new Error('文件超过 512 KB');
+   const parsed=PersonaHistory.parseImport(fs.readFileSync(r.filePaths[0],'utf8'));
+   if(x?.apply===true)return {imported:true,applied:true,...applyPrompt(personaPrompt(parsed.prompt))};
+   return {imported:true,applied:false,prompt:parsed.prompt,note:parsed.note};
+  });
+  handler('check-update',async()=>{
+   updateState={status:'checking',message:'正在查询 GitHub Release…'};emit();
+   try{
+    const info=await checkForUpdate(app.getVersion?.()||'0.0.0',fetchLike);
+    updateState=info.newer?{status:'available',message:`发现新版本 ${info.latest}（当前 ${info.current}）`,info}:{status:'none',message:`已是最新（${info.current}）`,info};
+   }catch(e){updateState={status:'error',message:e instanceof Error?e.message:'检查更新失败'};}
+   emit();return updateState;
+  });
+  handler('install-update',async x=>{
+   if(x?.confirm!==true)throw new Error('请确认下载并安装更新');
+   if(updateState.status!=='available'||!updateState.info)throw new Error('请先检查更新');
+   const info=updateState.info;updateState={status:'downloading',message:'准备下载…',info};emit();
+   try{
+    const root=releaseRoot(process.execPath,!!app.isPackaged,path.join(__dirname,'..'));
+    const result=await installUpdate(info,root,fetchLike,text=>{updateState={status:'downloading',message:text,info};emit();});
+    updateState={status:'installed',message:`已安装到 ${result.dir}。退出本软件后用 启动机器人.exe 重新启动即可切换到 ${result.version}。`,info,dir:result.dir};
+    log('更新已下载并校验：'+result.dir);
+   }catch(e){updateState={status:'error',message:e instanceof Error?e.message:'安装更新失败',info};}
+   emit();return updateState;
+  });
   handler('quit-app',()=>{setTimeout(()=>app.quit(),0);return true});
   handler('open-guide',()=>shell.openExternal('https://napneko.github.io/guide/start-install'));
   win=new BrowserWindow({width:1180,height:820,minWidth:900,minHeight:660,title:'QQ AI Bot',backgroundColor:'#f4f6f4',autoHideMenuBar:true,webPreferences:{preload:path.join(__dirname,'preload.js'),contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true}});
@@ -212,9 +262,10 @@ if(!app.requestSingleInstanceLock()){app.quit()}else{
   desktop.start(win);
   void win.loadFile(ui);if(process.argv.includes('--from-autostart')&&desktop.view.trayAvailable)win.hide();
   if(store.warning)log(store.warning);
+  if(app.isPackaged&&typeof setTimeout==='function')setTimeout(()=>{void checkForUpdate(app.getVersion?.()||'0.0.0',fetchLike).then(info=>{if(info.newer){updateState={status:'available',message:`发现新版本 ${info.latest}（当前 ${info.current}）`,info};log('GitHub 上有新版本 '+info.latest+'，可在首页「检查更新」里下载安装');emit();}}).catch(()=>{});},20_000);
   log('每次启动后将自动开启白名单回复；旧版同意需在 Windows 确认 90 秒群追问及费用后方可恢复');
    if(memory.remember&&memory.account)void login.start(memory.account).catch(()=>log('恢复登录失败，请在 QQ 连接页重试或扫码。'));
  });
  app.on('window-all-closed',()=>app.quit());
- let exiting=false;app.on('before-quit',event=>{desktop?.shutdown();try{persist?.flush();}catch{}account?.cancelBalance();preview?.cancel();auto.suspend();personaController?.abort();engine?.pause();testController?.abort();bot?.close();void webServer?.stop();if(login&&!exiting){event.preventDefault();exiting=true;void login.stop().finally(()=>app.quit())}});
+ let exiting=false;app.on('before-quit',event=>{desktop?.shutdown();try{persist?.flush();}catch{}try{fileLog?.close();}catch{}account?.cancelBalance();preview?.cancel();auto.suspend();personaController?.abort();engine?.pause();testController?.abort();bot?.close();void webServer?.stop();if(login&&!exiting){event.preventDefault();exiting=true;void login.stop().finally(()=>app.quit())}});
 }
