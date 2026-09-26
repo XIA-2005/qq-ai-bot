@@ -199,7 +199,14 @@ export class OneBot{
      if(wait>0)await sleep(wait,undefined,{signal});
     }
     const message:unknown[]=[];
-    if(i===0&&job.group&&!job.proactive&&!job.session)message.push({type:'at',data:{qq:job.user}},{type:'text',data:{text:' '}});
+    if(i===0&&job.group&&!job.proactive&&!job.session){
+     // How a person would address it: nothing when answering right away, a QQ quote when others spoke in
+     // between (or the message is old), an @ only when there is nothing to quote.
+     const mode=job.address??'at';
+     const quoteId=job.rawMessageIds?.[job.rawMessageIds.length-1]??job.rawMessageId;
+     if(mode==='quote'&&quoteId)message.push({type:'reply',data:{id:quoteId}});
+     else if(mode==='at'||(mode==='quote'&&!quoteId))message.push({type:'at',data:{qq:job.user}},{type:'text',data:{text:' '}});
+    }
     message.push(...buildMessageSegments(part));
     signal?.throwIfAborted();
     // Once a frame reaches QQ we cannot retract it; cancellation prevents any later frames.

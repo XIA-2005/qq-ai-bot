@@ -19,8 +19,24 @@ export interface Config {
  visionEnabled:boolean;
  prompt:string; timeout:number; cooldown:number; historyTurns:number; maxTokens:number; perMinute:number;
  mergeWindowMs:number; maxConcurrent:number; groupSessionIdleMinutes:number; engagement:number;
+ /** Group context and rooms label members by their group card instead of 成员N. */
+ useRealNames:boolean;
+ /** Other bot accounts in the same groups: never trigger judgments, direct @ answered at most every 10 minutes. */
+ otherBots:string[];
+ /** Outgoing shape guard: 0 = off. */
+ maxLines:number; maxLineChars:number; stripPeriod:boolean;
+ /** Minutes between two pictures a self-joining (proactive) group may look at; 0 = never look at ambient pictures. */
+ proactiveImageMinutes:number;
+ /** Short reminder appended as the last system line of every direct/session request (persona anti-drift). */
+ styleTail:string;
+ /** Attach a handful of the owner's own past lines (local retrieval from style-samples.json) to each request. */
+ styleSamplesEnabled:boolean;
+ /** Learn incoming stickers and let the model send them as [表情包: 关键词]. */
+ stickersEnabled:boolean;
+ /** Let the model rewrite each group's memory notes once a night (costs one request per active group). */
+ memoryAutoDistill:boolean;
 }
-export const defaults:Config={profiles:{},baseUrl:'https://api.deepseek.com',model:'deepseek-flash',wsUrl:'ws://127.0.0.1:3001',friends:[],groups:[],blocked:[],adminIds:[],remotePublicUrl:'',autoReplyOnLogin:true,autoReplyConsent:false,autoReplyConsentVersion:0,previousPrompt:'',proactiveEnabled:false,proactiveGroups:[],visionEnabled:false,prompt:'你是一个友善、简洁的中文聊天助手。请用自然的纯文本回复，不冒充账号本人。不要声称能够执行电脑操作。当请求包含实际图像时，请结合图像理解照片、截图和表情包；若只有文字识别结果，就仅依据文字回答；没有取得图像或文字时明确说明，不编造画面。消息里的 [表情: 名称] 表示对方发来的 QQ 表情或表情包，名称就是它的含义，请把它当作对方的情绪和语气来理解并自然回应，不要复述这个标记，也不要说自己看不到表情。你也可以用同样的 [表情: 名称] 写法发送 QQ 表情来表达情绪，例如 [表情: 微笑]、[表情: 笑哭]、[表情: 赞]、[表情: doge]，每条消息最多一个，不要滥用，名称必须是常见 QQ 表情名。',timeout:45,cooldown:5,historyTurns:6,maxTokens:1024,perMinute:10,mergeWindowMs:1500,maxConcurrent:3,groupSessionIdleMinutes:10,engagement:DEFAULT_ENGAGEMENT};
+export const defaults:Config={profiles:{},baseUrl:'https://api.deepseek.com',model:'deepseek-flash',wsUrl:'ws://127.0.0.1:3001',friends:[],groups:[],blocked:[],adminIds:[],remotePublicUrl:'',autoReplyOnLogin:true,autoReplyConsent:false,autoReplyConsentVersion:0,previousPrompt:'',proactiveEnabled:false,proactiveGroups:[],visionEnabled:false,prompt:'你是一个友善、简洁的中文聊天助手。请用自然的纯文本回复，不冒充账号本人。不要声称能够执行电脑操作。当请求包含实际图像时，请结合图像理解照片、截图和表情包；若只有文字识别结果，就仅依据文字回答；没有取得图像或文字时明确说明，不编造画面。消息里的 [表情: 名称] 表示对方发来的 QQ 表情或表情包，名称就是它的含义，请把它当作对方的情绪和语气来理解并自然回应，不要复述这个标记，也不要说自己看不到表情。你也可以用同样的 [表情: 名称] 写法发送 QQ 表情来表达情绪，例如 [表情: 微笑]、[表情: 笑哭]、[表情: 赞]、[表情: doge]，每条消息最多一个，不要滥用，名称必须是常见 QQ 表情名。',timeout:45,cooldown:5,historyTurns:6,maxTokens:1024,perMinute:10,mergeWindowMs:1500,maxConcurrent:3,groupSessionIdleMinutes:10,engagement:DEFAULT_ENGAGEMENT,useRealNames:true,otherBots:[],maxLines:0,maxLineChars:0,stripPeriod:false,proactiveImageMinutes:10,styleTail:'',styleSamplesEnabled:true,stickersEnabled:true,memoryAutoDistill:false};
 export function validate(raw:unknown):Config {
  if(!raw || typeof raw!=='object')throw new Error('配置格式无效');
  const v=raw as Record<string,unknown>;const c={...defaults} as Config;
@@ -35,6 +51,13 @@ export function validate(raw:unknown):Config {
  const admins=v.adminIds??[];
  if(!Array.isArray(admins)||admins.length>20||admins.some(x=>typeof x!=='string'||!/^\d{5,16}$/.test(x)))throw new Error('管理员 QQ 号须为 5–16 位数字，最多 20 个');
  c.adminIds=[...new Set(admins)];
+ const bots=v.otherBots??[];
+ if(!Array.isArray(bots)||bots.length>20||bots.some(x=>typeof x!=='string'||!/^\d{5,16}$/.test(x)))throw new Error('其他机器人 QQ 号须为 5–16 位数字，最多 20 个');
+ c.otherBots=[...new Set(bots)];
+ for(const k of ['useRealNames','stripPeriod','styleSamplesEnabled','stickersEnabled','memoryAutoDistill'] as const){if(v[k]!==undefined&&typeof v[k]!=='boolean')throw new Error('开关选项无效：'+k);c[k]=v[k]===undefined?defaults[k]:v[k] as boolean;}
+ const tail=v.styleTail===undefined?'':v.styleTail;
+ if(typeof tail!=='string'||tail.length>300)throw new Error('风格提醒最多 300 字符');
+ c.styleTail=tail.trim();
  const remote=typeof v.remotePublicUrl==='string'?v.remotePublicUrl.trim():'';
  if(remote){
   let remoteUrl:URL;try{remoteUrl=new URL(remote)}catch{throw new Error('手机远程固定域名无效')}
@@ -59,7 +82,7 @@ export function validate(raw:unknown):Config {
  c.previousPrompt=typeof v.previousPrompt==='string'?v.previousPrompt:'';
  const ranges={timeout:[10,120],cooldown:[1,120],historyTurns:[0,12],maxTokens:[64,2048],perMinute:[1,30]};
  for(const k of Object.keys(ranges) as (keyof typeof ranges)[]){const x=v[k];const [min,max]=ranges[k];if(typeof x!=='number'||!Number.isInteger(x)||x<min||x>max)throw new Error(`参数 ${k} 应为 ${min}–${max} 的整数`);c[k]=x;}
- const schedulerRanges={mergeWindowMs:[0,3000],maxConcurrent:[1,5],groupSessionIdleMinutes:[1,120],engagement:[0,100]};
+ const schedulerRanges={mergeWindowMs:[0,3000],maxConcurrent:[1,5],groupSessionIdleMinutes:[1,120],engagement:[0,100],maxLines:[0,8],maxLineChars:[0,400],proactiveImageMinutes:[0,240]};
  for(const k of Object.keys(schedulerRanges) as (keyof typeof schedulerRanges)[]){
   const x=v[k]===undefined?defaults[k]:v[k];const [min,max]=schedulerRanges[k];
   if(typeof x!=='number'||!Number.isInteger(x)||x<min||x>max)throw new Error(`参数 ${k} 应为 ${min}–${max} 的整数`);
@@ -135,7 +158,13 @@ export function faceLabel(s:any):string|null{
  return null;
 }
 export type RouteMode='direct'|'ambient'|'session'|'context';
-export interface Accepted {key:string;messageId:string;rawMessageId?:string;/** Every raw id folded into this job by batching; the room-context filter excludes all of them. */rawMessageIds?:string[];/** Raw id of the message this one quote-replies to (QQ 回复), so the exact image or line meant by “这个” can be looked up. */quotedId?:string;user:string;group?:string;text:string;media?:MediaReference[];mediaOmitted?:number;proactive?:boolean;followup?:boolean;observedAt?:number;revision?:number;session?:boolean;sessionContext?:SessionContext}
+export interface Accepted {key:string;messageId:string;rawMessageId?:string;/** Every raw id folded into this job by batching; the room-context filter excludes all of them. */rawMessageIds?:string[];/** Raw id of the message this one quote-replies to (QQ 回复), so the exact image or line meant by “这个” can be looked up. */quotedId?:string;/** Group card or nickname of the sender as QQ reported it. */senderName?:string;/** Engine clock (ms) when the message was routed; drives the quick-reply/no-@ rule. */at?:number;/** How a direct group reply addresses the member: no prefix, QQ quote of their message, or @. */address?:'none'|'quote'|'at';user:string;group?:string;text:string;media?:MediaReference[];mediaOmitted?:number;proactive?:boolean;followup?:boolean;observedAt?:number;revision?:number;session?:boolean;sessionContext?:SessionContext}
+/** Group card first, then nickname; trimmed, bounded, control characters removed. */
+export function displayName(sender:any):string{
+ const pick=(v:unknown)=>typeof v==='string'?v.replace(/[\u0000-\u001f\u007f]/g,'').trim():'';
+ const name=pick(sender?.card)||pick(sender?.nickname);
+ return name.slice(0,40);
+}
 /** Extract display text + media refs from a raw OneBot message array (mirrors route()'s parsing). */
 export function messageSummary(e:any):{text:string;media:MediaReference[];mediaOmitted:number}{
  const textParts:string[]=[];const media:MediaReference[]=[];let mediaOmitted=0;
@@ -193,5 +222,6 @@ export function route(e:any,c:Config,self:string,now=Date.now(),ambient:boolean|
  if(!text||text.length>4000)return null;
  // Only a plausible OneBot message id is kept; anything else is not looked up.
  const quotedSeg=e.message.find((s:any)=>s?.type==='reply'&&s.data?.id!=null&&/^-?\d{1,20}$/.test(String(s.data.id)));
- return {key:group?`g:${group}:${user}`:`p:${user}`,messageId:`${self}:${e.message_type}:${group||user}:${e.message_id}`,rawMessageId:String(e.message_id),...(quotedSeg?{quotedId:String(quotedSeg.data.id)}:{}),user,group,text,...(media.length?{media}:{}),...(mediaOmitted?{mediaOmitted}:{})};
+ const senderName=displayName(e.sender);
+ return {key:group?`g:${group}:${user}`:`p:${user}`,messageId:`${self}:${e.message_type}:${group||user}:${e.message_id}`,rawMessageId:String(e.message_id),...(quotedSeg?{quotedId:String(quotedSeg.data.id)}:{}),...(senderName?{senderName}:{}),at:now,user,group,text,...(media.length?{media}:{}),...(mediaOmitted?{mediaOmitted}:{})};
 }

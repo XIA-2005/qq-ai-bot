@@ -50,11 +50,13 @@ test('private reply keeps its original two-message shape (no group context)',asy
   assert.equal(inputs[0].length,2);
 });
 
-test('context buffer is cleared on pause',async()=>{
+test('context buffer survives a pause (config save / restart) and is wiped only by clear',async()=>{
   const {engine}=setup();
   engine.receive(grp(1,123456,[{type:'text',data:{text:'记录一下'}}]),'999999');
   await tick();
   assert.equal(engine.context.recent('345678',Date.now()).length,1);
   engine.pause();
+  assert.equal(engine.context.recent('345678',Date.now()).length,1,'pausing keeps what the room said');
+  engine.clear();
   assert.equal(engine.context.recent('345678',Date.now()).length,0);
 });

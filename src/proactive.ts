@@ -5,10 +5,10 @@ import {parseDecision} from './reply-envelope';
 export {unwrapReply} from './reply-envelope';
 // Context retention is deliberately independent of the speaking cooldown: a chatty dial must not shrink the room context.
 const CONTEXT_WINDOW=5*60_000, HOUR=60*60_000, MAX_AGE=90_000;
-interface GroupState {lines:{user:string;text:string;time:number}[];fresh:number;revision:number;checked:number;attempted:number;hits:number[]}
+interface GroupState {lines:{user:string;text:string;time:number;name?:string}[];fresh:number;revision:number;checked:number;attempted:number;hits:number[]}
 /** Only receives already validated, deduplicated, opted-in group text. No timers or disk history. */
 export class Proactive {
- constructor(private tuning:()=>EngagementTuning=()=>engagementTuning(DEFAULT_ENGAGEMENT)){}
+ constructor(private tuning:()=>EngagementTuning=()=>engagementTuning(DEFAULT_ENGAGEMENT),private names:()=>boolean=()=>false){}
  private groups=new Map<string,GroupState>();
  reset(){for(const s of this.groups.values()){s.lines=[];s.fresh=0;s.revision++;}}
  directed(group:string,now=Date.now()){const s=this.groups.get(group);if(s){s.lines=[];s.revision++;s.fresh=0;s.checked=now;}}
@@ -19,18 +19,18 @@ export class Proactive {
   if(!s){if(this.groups.size>=200)return null;s={lines:[],fresh:0,revision:0,checked:-Infinity,attempted:-Infinity,hits:[]};this.groups.set(j.group,s);}
   s.lines=s.lines.filter(l=>now-l.time<CONTEXT_WINDOW);
   s.fresh=Math.min(s.fresh,s.lines.length);
-  s.lines.push({user:j.user,text:j.text.slice(0,600),time:now});s.lines=s.lines.slice(-12);s.fresh++;s.revision++;
+  s.lines.push({user:j.user,text:j.text.slice(0,600),time:now,name:j.senderName});s.lines=s.lines.slice(-12);s.fresh++;s.revision++;
   s.hits=s.hits.filter(time=>now-time<HOUR);
   if(s.fresh<t.freshLines||now-s.checked<t.checkIntervalMs||now-s.attempted<t.cooldownMs||s.hits.length>=t.hourlyLimit)return null;
   s.fresh=0;s.checked=now;
   const participants=[...new Set(s.lines.map(l=>l.user))];
-  const text=JSON.stringify(s.lines.map(l=>({speaker:`成员${participants.indexOf(l.user)+1}`,text:l.text})));
+  const text=JSON.stringify(s.lines.map(l=>({speaker:this.names()&&l.name?l.name:`成员${participants.indexOf(l.user)+1}`,text:l.text})));
   return {...j,key:`ambient:${j.group}`,text,proactive:true,observedAt:now,revision:s.revision};
  }
  /** Recent validated member lines, used only to seed a session the bot joined by itself. */
  recent(group:string,now:number,max=8){
   const s=this.groups.get(group);if(!s)return [];
-  return s.lines.filter(l=>now-l.time<CONTEXT_WINDOW).slice(-max).map(l=>({user:l.user,text:l.text}));
+  return s.lines.filter(l=>now-l.time<CONTEXT_WINDOW).slice(-max).map(l=>({user:l.user,text:l.text,name:l.name}));
  }
  allowed(j:Accepted,now:number,c:Config):boolean {
   const t=this.tuning();

@@ -56,13 +56,15 @@ export function followupMessages(
  job:Accepted,
  persona:string,
  botLines:string[],
- roomLines:{user:string;text:string}[]
+ roomLines:{user:string;text:string;name?:string}[],
+ names=false
 ):ChatMessage[]{
  const participants=[...new Set(roomLines.map(l=>l.user))];
+ const label=(l:{user:string;name?:string})=>names&&l.name?l.name:`成员${participants.indexOf(l.user)+1}`;
  const payload={
   你最近说过:botLines,
-  群里最近的消息:roomLines.map(l=>({speaker:`成员${participants.indexOf(l.user)+1}`,text:l.text})),
-  这条新消息:job.text
+  群里最近的消息:roomLines.map(l=>({speaker:label(l),text:l.text})),
+  这条新消息:(names&&job.senderName?job.senderName+'：':'')+job.text
  };
  return [
   {role:'system',content:persona},

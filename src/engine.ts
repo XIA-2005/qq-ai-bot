@@ -1,6 +1,6 @@
 import {Proactive,proactiveMessages,parseProactive,unwrapReply} from './proactive';
 import {GroupSessions,sessionMessages} from './group-session';
-import {Config,Accepted,ChatMessage,route,messageSummary} from './config';
+import {Config,Accepted,ChatMessage,route,messageSummary,displayName} from './config';
 import {TargetKind,resolveTarget,effectiveSignature} from './profiles';
 import {ConversationScheduler,SchedulerClock,systemClock} from './scheduler';
 import {engagementTuning} from './engagement';
@@ -10,7 +10,10 @@ import {FollowupTracker,followupMessages} from './followup';
 import {withPreparedMedia,describeMediaIssues,MediaReference,PreparedMedia,MediaOrigin,MAX_MEDIA_IMAGES} from './media';
 import {GroupContext,contextMessages,ContextLine} from './group-context';
 import {looksLikeDecision} from './reply-envelope';
-export interface EngineDeps {prepareMedia?:(refs:MediaReference[],vision:boolean,signal:AbortSignal)=>Promise<PreparedMedia>;/** Load a quoted message that already left the room buffer (OneBot get_msg). */fetchMessage?:(id:string,group:string,signal:AbortSignal)=>Promise<{user:string;text:string;media:MediaReference[]}|null>;generate:(messages:ChatMessage[],signal:AbortSignal,config?:Config,job?:Accepted)=>Promise<string>;/** May resolve to the QQ ids of the bubbles it sent, so a later quote of one can be matched. */send:(job:Accepted,text:string,signal:AbortSignal)=>Promise<void|unknown[]>;log:(message:string)=>void;change:()=>void;react?:(job:Accepted,emojiId:string)=>Promise<boolean>}
+import {LoopGuard} from './loop-guard';
+import {shapeReply} from './shape';
+import type {StatePersister,EngineState} from './persist';
+export interface EngineDeps {prepareMedia?:(refs:MediaReference[],vision:boolean,signal:AbortSignal)=>Promise<PreparedMedia>;/** Load a quoted message that already left the room buffer (OneBot get_msg). */fetchMessage?:(id:string,group:string,signal:AbortSignal)=>Promise<{user:string;text:string;media:MediaReference[]}|null>;generate:(messages:ChatMessage[],signal:AbortSignal,config?:Config,job?:Accepted)=>Promise<string>;/** May resolve to the QQ ids of the bubbles it sent, so a later quote of one can be matched. */send:(job:Accepted,text:string,signal:AbortSignal)=>Promise<void|unknown[]>;log:(message:string)=>void;change:()=>void;react?:(job:Accepted,emojiId:string)=>Promise<boolean>;/** Something the owner should hear about now (budget, loops, repeated failures); the app forwards it to the admin. */notify?:(kind:string,text:string)=>void;/** Room context + per-user memory survive restarts through this (debounced) snapshot. */persist?:StatePersister}
 /** In QQ a picture is usually its own message and the "@bot 看看" follows it; a direct @ without images borrows the room's pictures from this long ago. */
 export const RECENT_MEDIA_WINDOW_MS=300_000;
 export class Engine {
@@ -23,8 +26,13 @@ export class Engine {
  readonly context=new GroupContext();
  /** QQ nickname of the logged-in account; set by the app so being called by name counts. */
  selfName='';
- private proactive=new Proactive(()=>engagementTuning(this.config.engagement));
+ private proactive=new Proactive(()=>engagementTuning(this.config.engagement),()=>this.config.useRealNames!==false);
  private rooms:GroupSessions;
+ /** Other-bot throttle, ping-pong breaker and manual mutes. */
+ readonly guard=new LoopGuard(()=>this.config.otherBots??[]);
+ /** Last time a self-joining group was allowed to look at an ambient picture. */
+ private imageAt=new Map<string,number>();
+ private failStreak=0;
  private sessionTimer:unknown;
  private seen=new Map<string,number>();
  private recorded=new Map<string,number>();
@@ -34,7 +42,18 @@ export class Engine {
  private generation=0;
  private scheduler:ConversationScheduler;
  constructor(public config:Config,private deps:EngineDeps,private clock:SchedulerClock=systemClock){
-  this.rooms=new GroupSessions(()=>this.config.groupSessionIdleMinutes*60_000,clock);
+  this.rooms=new GroupSessions(()=>this.config.groupSessionIdleMinutes*60_000,clock,undefined,()=>this.config.useRealNames!==false);
+  const saved=deps.persist?.load();
+  if(saved){
+   const now=clock.now();
+   this.context.load(saved.context as Record<string,ContextLine[]>,now);
+   for(const [key,msgs] of Object.entries(saved.history||{})){
+    if(!/^(p:\d{5,16}|g:\d{5,16}:\d{5,16})$/.test(key)||!Array.isArray(msgs))continue;
+    const ok=msgs.filter((m:any)=>m&&(m.role==='user'||m.role==='assistant')&&typeof m.content==='string').slice(-24) as ChatMessage[];
+    if(ok.length)this.history.set(key,ok);
+    if(this.history.size>=100)break;
+   }
+  }
   this.scheduler=new ConversationScheduler({
    settings:()=>this.config,
    work:(job,signal)=>this.reply(job,signal),
@@ -56,8 +75,12 @@ export class Engine {
  /** Groups currently in continuous participation; used for status display only and never contains message text. */
  get groupSessions(){return this.rooms.view(this.clock.now());}
  start(){this.running=true;this.scheduler.start();}
- pause(){this.running=false;this.generation++;this.proactive.reset();this.rooms.clear();this.followups.clear();this.context.clear();this.recorded.clear();this.clearSessionTimer();this.scheduler.stop();}
- clear(){this.pause();this.history.clear();this.selfMessages.clear();this.scheduler.clearCooldown();this.deps.change();}
+ /** Stop replying. Judgment state (proactive counters, open rooms, follow-up windows) is dropped; what the rooms said and the per-user memory are kept, so a config save or a restart does not make the bot forget the thread. */
+ pause(){this.running=false;this.generation++;this.proactive.reset();this.rooms.clear();this.followups.clear();this.recorded.clear();this.clearSessionTimer();this.scheduler.stop();}
+ /** Stop and forget everything, including the persisted snapshot. */
+ clear(){this.pause();this.context.clear();this.history.clear();this.selfMessages.clear();this.guard.clear();this.scheduler.clearCooldown();this.persistSoon();this.deps.persist?.flush();this.deps.change();}
+ private snapshot():EngineState{const h:Record<string,unknown[]>={};for(const [k,v] of this.history)h[k]=v;return {version:1,savedAt:this.clock.now(),context:this.context.export(),history:h};}
+ private persistSoon(){this.deps.persist?.save(()=>this.snapshot());}
  updateConfig(next:Config){
   const old=this.config;this.config=next;
   for(const kind of ['friend','group'] as TargetKind[]){
@@ -95,7 +118,12 @@ export class Engine {
   const summary=messageSummary(e);if(!summary.text)return;
   // A leaked decision envelope echoed back as the bot's own line would teach the model to repeat it.
   if(user===self&&looksLikeDecision(summary.text))return;
-  this.context.record(group,{id,user,text:summary.text,time:now,fromBot:user===self,media:summary.media},now);
+  this.context.record(group,{id,user,name:displayName(e.sender)||undefined,text:summary.text,time:now,fromBot:user===self,media:summary.media},now);
+  this.persistSoon();
+  if(this.guard.observe(group,user,user===self,now)){
+   this.deps.log(`群 ${group} 出现机器人与同一账号的快速对话循环，已自动静音 5 分钟`);
+   this.deps.notify?.('loop',`群 ${group} 疑似机器人对话循环（连续快速一来一回），已自动静音 5 分钟。`);
+  }
  }
  receive(event:unknown,self:string){
   if(!this.running)return;
@@ -103,7 +131,13 @@ export class Engine {
   const e=event as any;
   this.selfId=self;
   this.recordContext(e,self,now);
+  // A muted group (loop breaker or admin) only listens; another bot's lines are context, never a trigger,
+  // and its direct @ is answered at most once per ten minutes.
+  if(e?.message_type==='group'&&this.guard.muted(String(e.group_id),now)){this.ignored++;return;}
+  const fromOtherBot=e?.message_type==='group'&&this.guard.isBot(String(e.user_id));
   let job=route(event,this.config,self,now);
+  if(job&&fromOtherBot&&!this.guard.allowBotReply(String(e.group_id),String(e.user_id),now)){this.ignored++;this.deps.log('另一个机器人 @ 了我，10 分钟内只回一次，本次忽略');return;}
+  if(fromOtherBot&&!job){this.ignored++;return;}
   let context:Accepted|null=null;
   // Being quoted or called by name is as direct as an @: answer it properly instead of
   // leaving it to the occasional-chatter path.
@@ -118,7 +152,7 @@ export class Engine {
   if(!job&&e?.message_type==='group'&&Array.isArray(e.message)&&this.rooms.active(String(e.group_id),now)){
    const mentioned=e.message.some((s:any)=>s?.type==='at');
    const routed=route(event,this.config,self,now,mentioned?'context':'session');
-   if(routed&&mentioned)context=routed;else if(routed)job={...routed,session:true};
+   if(routed&&mentioned)context=routed;else if(routed&&!fromOtherBot)job={...routed,session:true};
   }
   // Only a still-open, explicitly addressed batch permits short unmentioned follow-ups.
   // Other users, other @ targets, expired windows and arbitrary ambient text never gain access.
@@ -142,13 +176,13 @@ export class Engine {
   for(const [key,time] of this.seen)if(now-time>600000)this.seen.delete(key);
   if(this.seen.has(accepted.messageId))return;
   this.seen.set(accepted.messageId,now);if(this.seen.size>10000)this.seen.delete(this.seen.keys().next().value!);
-  if(context){this.rooms.note(context.group!,context.user,context.text,now);return;}
+  if(context){this.rooms.note(context.group!,context.user,context.text,now,context.senderName);return;}
   if(ambient){
    const candidate=this.proactive.observe(job!,now);if(!candidate)return;job=candidate;
   }else if(job!.group){
    const room=job!.group,sender=job!.user;
    if(job!.session){
-    const context=this.rooms.touch(room,sender,job!.text,now);
+    const context=this.rooms.touch(room,sender,job!.text,now,job!.senderName);
     if(!context){this.ignored++;return;} // The session ended while this message was being routed.
     job={...job!,sessionContext:context};
    }else{
@@ -157,7 +191,7 @@ export class Engine {
     this.scheduler.cancelQueued(j=>j.session===true&&j.group===room);
     if(resolveTarget(this.config,'group',room).session){
      if(!this.rooms.active(room,now))this.rooms.open(room,'mention',now,this.roomSeed(room,job!,now));
-     const context=this.rooms.touch(room,sender,job!.text,now);
+     const context=this.rooms.touch(room,sender,job!.text,now,job!.senderName);
      if(context)job={...job!,sessionContext:context};
     }
    }
@@ -184,7 +218,7 @@ export class Engine {
  /** What the room said before an @ opened a session, so the first reply is not blind to the thread that caused it. */
  private roomSeed(room:string,job:Accepted,now:number){
   const own=this.ownIds(job);
-  return this.context.recent(room,now).filter(l=>!own.has(l.id)).map(l=>({user:l.user,text:l.text,fromBot:l.fromBot}));
+  return this.context.recent(room,now).filter(l=>!own.has(l.id)).map(l=>({user:l.user,text:l.text,fromBot:l.fromBot,name:l.name}));
  }
  /** Ask QQ for a quoted message that already left the room buffer. Best effort: a failure only means "no quote". */
  private async fetchQuoted(group:string,quotedId:string,id:string,now:number,signal:AbortSignal):Promise<ContextLine|undefined>{
@@ -213,17 +247,25 @@ export class Engine {
   let quoted=quotedId?this.context.find(job.group!,quotedId,now):undefined;
   if(quotedId&&!quoted&&this.deps.fetchMessage){quoted=await this.fetchQuoted(job.group!,job.quotedId!,quotedId,now,signal);if(!current())return;}
   // Follow-up judgments describe the room by member; the bot's own lines are passed separately.
-  const roomLines=room.filter(l=>!l.fromBot).slice(-12).map(l=>({user:l.user,text:l.text}));
+  const names=this.config.useRealNames!==false;
+  const roomLines=room.filter(l=>!l.fromBot).slice(-12).map(l=>({user:l.user,text:l.text,name:l.name}));
   // Per-user memory holds only the exchange itself, never the room snapshot or judgment prompts of the moment.
   const exchange:ChatMessage[]=[...(profile.historyTurns>0?(this.history.get(job.key)||[]).slice(-profile.historyTurns*2):[]),{role:'user',content:job.text}];
-  const messages:ChatMessage[]=job.proactive?proactiveMessages(job,profile.prompt,this.config.engagement):job.followup?followupMessages(job,profile.prompt,this.followups.lines(job.group||''),roomLines.length?roomLines:this.proactive.recent(job.group||'',now)):inRoom?sessionMessages(job,profile.prompt,job.sessionContext,!job.session,this.config.engagement):[
+  const messages:ChatMessage[]=job.proactive?proactiveMessages(job,profile.prompt,this.config.engagement):job.followup?followupMessages(job,profile.prompt,this.followups.lines(job.group||''),roomLines.length?roomLines:this.proactive.recent(job.group||'',now),names):inRoom?sessionMessages(job,profile.prompt,job.sessionContext,!job.session,this.config.engagement,names):[
    {role:'system',content:profile.prompt},
-   ...(job.group?contextMessages(room,{asker:job.user,quoted}):[]),
+   ...(job.group?contextMessages(room,{asker:job.user,quoted,names}):[]),
    ...exchange
   ];
+  this.decorate(messages,job);
   try{
    let requestMessages=messages;
    let mediaRefs=job.media,mediaOmitted=job.mediaOmitted??0,origin:MediaOrigin='message';
+   if(job.proactive&&job.group){
+    // A self-joining group may glance at a member's picture now and then, like a person scrolling past.
+    const every=(this.config.proactiveImageMinutes??0)*60_000,last=this.imageAt.get(job.group)??-Infinity;
+    if(mediaRefs?.length&&every>0&&now-last>=every){this.imageAt.set(job.group,now);origin='ambient';mediaRefs=mediaRefs.slice(0,1);mediaOmitted=0;this.deps.log('主动接话：顺带看一眼群友刚发的图');}
+    else mediaRefs=undefined;
+   }
    if(job.group&&!job.proactive&&(!mediaRefs||!mediaRefs.length)){
     // The quoted message's own pictures are exactly what "这个" means; otherwise a direct @ may be
     // about a picture posted moments earlier as its own message. Self-initiated judgments do not
@@ -263,6 +305,10 @@ export class Engine {
     const outgoing=unwrapReply(answer);
     if(outgoing===null){this.deps.log('模型输出为内部决策结构，按沉默处理');return;}
     answer=outgoing;
+   // Outgoing shape guard: bubble count / length / trailing full stop / one face per bubble.
+   answer=shapeReply(answer,{maxLines:this.config.maxLines||0,maxLineChars:this.config.maxLineChars||0,stripPeriod:this.config.stripPeriod===true,maxFaces:1});
+   if(!answer.trim()){this.deps.log('整形后没有可发送的内容，本次沉默');return;}
+   if(job.group&&!job.proactive&&!job.session)job={...job,address:this.addressMode(job,this.clock.now())};
    const sent=await this.deps.send(job,answer,signal);
    if(!current())return;
    const delivered=this.clock.now();
@@ -271,6 +317,10 @@ export class Engine {
    if(job.group){
     const alias=(Array.isArray(sent)?sent:[]).filter(id=>id!=null&&id!=='').map(id=>job.group+':'+String(id));
     this.context.record(job.group,{id:'bot:'+job.messageId+':'+delivered,alias,user:this.selfId,text:answer,time:delivered,fromBot:true,media:[]},delivered);
+    if(this.guard.observe(job.group,this.selfId,true,delivered)){
+     this.deps.log(`群 ${job.group} 出现机器人与同一账号的快速对话循环，已自动静音 5 分钟`);
+     this.deps.notify?.('loop',`群 ${job.group} 疑似机器人对话循环（连续快速一来一回），已自动静音 5 分钟。`);
+    }
    }
    // Answering someone invites a reply, so watch for one. An UNPROMPTED interjection does not:
    // in a group the user did not put in session mode, that setting means "occasionally chime
@@ -288,8 +338,26 @@ export class Engine {
     this.history.set(job.key,[...exchange,{role:'assistant' as const,content:answer}].slice(-profile.historyTurns*2));
     if(this.history.size>100)this.history.delete(this.history.keys().next().value!);
    }
+   this.persistSoon();
+   this.failStreak=0;
    this.sent++;
    this.deps.log(job.proactive?'已主动参与一次群聊（不记录消息正文）':job.session?'已在持续参与的群聊中回复一次（不记录消息正文）':'已完成一次回复（不记录消息正文）');
-  }catch(e){if(current()){this.errors++;this.deps.log(e instanceof Error?e.message:'回复失败');}}
+  }catch(e){
+   if(current()){
+    this.errors++;const msg=e instanceof Error?e.message:'回复失败';this.deps.log(msg);
+    if(/预算/.test(msg))this.deps.notify?.('budget',msg);
+    if(++this.failStreak===5)this.deps.notify?.('failures','模型连续 5 次调用失败，最近一次：'+msg);
+   }
+  }
  }
+ /** How a direct group reply addresses the member: quick answers need no prefix; when others spoke since (or it has been a while) quote their message; @ only when there is nothing to quote. */
+ private addressMode(job:Accepted,now:number):'none'|'quote'|'at'{
+  if(!job.group)return 'none';
+  const at=job.at??now;
+  const others=this.context.recent(job.group,now).filter(l=>l.time>=at&&!l.fromBot&&l.user!==job.user).length;
+  if(now-at<60_000&&others===0)return 'none';
+  return (job.rawMessageIds?.length||job.rawMessageId)?'quote':'at';
+ }
+ /** Hook for the persona layer (style tail, memory notes, own-voice samples); phase 2 fills it in. */
+ protected decorate(_messages:ChatMessage[],_job:Accepted){}
 }

@@ -23,7 +23,7 @@ import {MobileWebServer} from './web-server';
 import {ControlService} from './control';
 import {RemoteAccess} from './remote-access';
 import QRCode from 'qrcode';
-import {Store} from './store';import {Engine} from './engine';import {OneBot} from './onebot';import {validate,Config,ChatMessage,FOLLOWUP_DISCLOSURE_VERSION} from './config';
+import {Store} from './store';import {Engine} from './engine';import {filePersister} from './persist';import {OneBot} from './onebot';import {validate,Config,ChatMessage,FOLLOWUP_DISCLOSURE_VERSION} from './config';
 app.setName('QQ AI Bot');
 if(!app.requestSingleInstanceLock()){app.quit()}else{
  let preview:PreviewSession;let desktop:DesktopService;let account:ApiAccount;let usage:UsageLedger;let budget:BudgetManager;
@@ -35,6 +35,17 @@ if(!app.requestSingleInstanceLock()){app.quit()}else{
  const ui=path.join(__dirname,'../ui/index.html');
  const autoConditions=()=>({connected:!!bot?.connected,enabled:store?.config.autoReplyOnLogin!==false,consented:!!store?.config.autoReplyConsent&&store.config.autoReplyConsentVersion>=FOLLOWUP_DISCLOSURE_VERSION,hasKey:!!store?.key,hasWhitelist:!!store&&hasEnabledTargets(store.config),busy:!!engine?.active||testing||!!personaController});
  const emit=()=>{if(engine&&store&&bot&&auto.consume(autoConditions())){engine.start();log('条件就绪，已自动开启白名单回复');}if(win&&!win.isDestroyed())win.webContents.send('state',snapshot());desktop?.refresh(!!bot?.connected,!!engine?.running,auto.status(autoConditions(),engine?.running||false))};
+ let persist:ReturnType<typeof filePersister>|undefined;
+ const notifiedAt=new Map<string,number>();
+ /** Tell the owner in QQ about things that need a person (budget, loops, repeated failures, disconnects). One message per kind per 30 minutes; never throws. */
+ const notifyAdmin=(kind:string,text:string)=>{
+  try{
+   const last=notifiedAt.get(kind)||0;if(Date.now()-last<30*60_000)return;notifiedAt.set(kind,Date.now());
+   log('已私聊管理员：'+text);
+   if(!bot?.connected)return;
+   for(const id of store?.config.adminIds||[])void bot.call('send_private_msg',{user_id:Number(id)||id,message:[{type:'text',data:{text:'【QQ AI Bot】'+text}}]}).catch(()=>{});
+  }catch{}
+ };
  const log=(message:string)=>{logs.unshift({time:new Date().toLocaleTimeString('zh-CN',{hour12:false}),message});logs.splice(150);emit()};
  const snapshot=()=>({runtimePackage:{version:app.getVersion?.()||'开发版',path:process.execPath||'',packaged:!!app.isPackaged,externalRuntime,runtimeDir},usage:usage?.view,budget:budget?.view,preview:preview?.view,desktop:desktop?.view,remoteAccess:remoteAccess?.view(store?.config.remotePublicUrl),autoReplyStatus:auto.status(autoConditions(),engine?.running||false),loginMemory:memory?.view,persona:{busy:!!personaController,...personaProgress},running:engine?.running||false,connected:bot?.connected||false,qqStatus:bot?.status||'未连接',self:bot?.self||'',modelState:testing?'验证中':account?.view.model.status||'未配置 API Key',apiAccount:account?.view,sent:engine?.sent||0,errors:engine?.errors||0,pending:engine?.pending||0,active:engine?.active||false,activeCount:engine?.activeCount||0,merging:engine?.merging||0,merged:engine?.merged||0,expired:engine?.expired||0,sessions:engine?.sessions||0,groupSessions:engine?.groupSessions||[],login:login?.state||{phase:'idle',message:'',qr:'',available:false},logs});
  const trackedWithUsage=(c:Config,key:string,messages:ChatMessage[],signal:AbortSignal,context:UsageContext)=>trackedModel(c,key,messages,signal,context,{account,usage,budget,complete:completeWithUsage});
@@ -47,7 +58,8 @@ if(!app.requestSingleInstanceLock()){app.quit()}else{
   usage=new UsageLedger(app.getPath('userData'),emit);
   budget=new BudgetManager(app.getPath('userData'),usage,emit);
   account=new ApiAccount(app.getPath('userData'),emit);account.configure(store.config,store.key);
-  engine=new Engine(store.config,{prepareMedia:(refs,vision,signal)=>bot.prepareMedia(refs,vision,signal),fetchMessage:(id,group,signal)=>bot.fetchMessage(id,group,signal),generate:(messages,signal,config,job)=>trackedComplete(config||store.config,store.key,messages,signal,{kind:'chat',target:job?(job.group?'g:'+job.group:'p:'+job.user):undefined}),send:(j,t,signal)=>bot.send(j,t,300,signal),react:(j,emoji)=>bot.react(j.rawMessageId||'',emoji),log,change:emit});
+  persist=filePersister(app.getPath('userData'));
+  engine=new Engine(store.config,{persist,notify:(kind,text)=>notifyAdmin(kind,text),prepareMedia:(refs,vision,signal)=>bot.prepareMedia(refs,vision,signal),fetchMessage:(id,group,signal)=>bot.fetchMessage(id,group,signal),generate:(messages,signal,config,job)=>trackedComplete(config||store.config,store.key,messages,signal,{kind:'chat',target:job?(job.group?'g:'+job.group:'p:'+job.user):undefined}),send:(j,t,signal)=>bot.send(j,t,300,signal),react:(j,emoji)=>bot.react(j.rawMessageId||'',emoji),log,change:emit});
   bot=new OneBot(e=>{
    void(async()=>{
     try{if(adminHandler&&await adminHandler.handleEvent(e,bot.self))return;}catch(err){log(`管理员指令异常: ${err instanceof Error?err.message:String(err)}`);}
@@ -175,5 +187,5 @@ if(!app.requestSingleInstanceLock()){app.quit()}else{
    if(memory.remember&&memory.account)void login.start(memory.account).catch(()=>log('恢复登录失败，请在 QQ 连接页重试或扫码。'));
  });
  app.on('window-all-closed',()=>app.quit());
- let exiting=false;app.on('before-quit',event=>{desktop?.shutdown();account?.cancelBalance();preview?.cancel();auto.suspend();personaController?.abort();engine?.pause();testController?.abort();bot?.close();void webServer?.stop();if(login&&!exiting){event.preventDefault();exiting=true;void login.stop().finally(()=>app.quit())}});
+ let exiting=false;app.on('before-quit',event=>{desktop?.shutdown();try{persist?.flush();}catch{}account?.cancelBalance();preview?.cancel();auto.suspend();personaController?.abort();engine?.pause();testController?.abort();bot?.close();void webServer?.stop();if(login&&!exiting){event.preventDefault();exiting=true;void login.stop().finally(()=>app.quit())}});
 }

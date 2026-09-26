@@ -236,9 +236,10 @@ export async function prepareMedia(refs:MediaReference[],vision:boolean,signal:A
  return output;
 }
 /** Where borrowed images came from: the message itself, the message it quote-replies to, or the room's last few minutes. */
-export type MediaOrigin='message'|'quoted'|'recent';
+export type MediaOrigin='message'|'quoted'|'recent'|'ambient';
 const ORIGIN_NOTES:Record<MediaOrigin,string>={
  message:'',
+ ambient:'这是群友刚刚随手发到群里的图，没有人在问你。像路过的群友那样最多点评一句（十来个字），不要描述图片内容，不确定就沉默。',
  quoted:'这些图片来自当前消息所回复/引用的那条消息；对方说的“这个”“这张图”就是指它们。',
  recent:'当前消息本身没有图片；这些图片是群里最近几分钟内发出的。只有当前消息在谈论图片时才结合它们回答，否则忽略图片，不要主动描述。'
 };
