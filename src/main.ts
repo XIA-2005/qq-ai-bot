@@ -47,7 +47,7 @@ if(!app.requestSingleInstanceLock()){app.quit()}else{
   usage=new UsageLedger(app.getPath('userData'),emit);
   budget=new BudgetManager(app.getPath('userData'),usage,emit);
   account=new ApiAccount(app.getPath('userData'),emit);account.configure(store.config,store.key);
-  engine=new Engine(store.config,{prepareMedia:(refs,vision,signal)=>bot.prepareMedia(refs,vision,signal),generate:(messages,signal,config,job)=>trackedComplete(config||store.config,store.key,messages,signal,{kind:'chat',target:job?(job.group?'g:'+job.group:'p:'+job.user):undefined}),send:(j,t,signal)=>bot.send(j,t,300,signal),react:(j,emoji)=>bot.react(j.rawMessageId||'',emoji),log,change:emit});
+  engine=new Engine(store.config,{prepareMedia:(refs,vision,signal)=>bot.prepareMedia(refs,vision,signal),fetchMessage:(id,group,signal)=>bot.fetchMessage(id,group,signal),generate:(messages,signal,config,job)=>trackedComplete(config||store.config,store.key,messages,signal,{kind:'chat',target:job?(job.group?'g:'+job.group:'p:'+job.user):undefined}),send:(j,t,signal)=>bot.send(j,t,300,signal),react:(j,emoji)=>bot.react(j.rawMessageId||'',emoji),log,change:emit});
   bot=new OneBot(e=>{
    void(async()=>{
     try{if(adminHandler&&await adminHandler.handleEvent(e,bot.self))return;}catch(err){log(`管理员指令异常: ${err instanceof Error?err.message:String(err)}`);}

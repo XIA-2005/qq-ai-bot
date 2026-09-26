@@ -1,26 +1,35 @@
-import {Proactive,proactiveMessages,parseProactive} from './proactive';
+import {Proactive,proactiveMessages,parseProactive,unwrapReply} from './proactive';
 import {GroupSessions,sessionMessages} from './group-session';
-import {Config,Accepted,ChatMessage,route} from './config';
+import {Config,Accepted,ChatMessage,route,messageSummary} from './config';
 import {TargetKind,resolveTarget,effectiveSignature} from './profiles';
 import {ConversationScheduler,SchedulerClock,systemClock} from './scheduler';
 import {engagementTuning} from './engagement';
 import {isLowValueFiller,reactionFor} from './humanize';
 import {SelfMessageLog,addressedBy} from './addressing';
 import {FollowupTracker,followupMessages} from './followup';
-import {withPreparedMedia,describeMediaIssues,MediaReference,PreparedMedia} from './media';
-export interface EngineDeps {prepareMedia?:(refs:MediaReference[],vision:boolean,signal:AbortSignal)=>Promise<PreparedMedia>;generate:(messages:ChatMessage[],signal:AbortSignal,config?:Config,job?:Accepted)=>Promise<string>;send:(job:Accepted,text:string,signal:AbortSignal)=>Promise<void>;log:(message:string)=>void;change:()=>void;react?:(job:Accepted,emojiId:string)=>Promise<boolean>}
+import {withPreparedMedia,describeMediaIssues,MediaReference,PreparedMedia,MediaOrigin,MAX_MEDIA_IMAGES} from './media';
+import {GroupContext,contextMessages,ContextLine} from './group-context';
+import {looksLikeDecision} from './reply-envelope';
+export interface EngineDeps {prepareMedia?:(refs:MediaReference[],vision:boolean,signal:AbortSignal)=>Promise<PreparedMedia>;/** Load a quoted message that already left the room buffer (OneBot get_msg). */fetchMessage?:(id:string,group:string,signal:AbortSignal)=>Promise<{user:string;text:string;media:MediaReference[]}|null>;generate:(messages:ChatMessage[],signal:AbortSignal,config?:Config,job?:Accepted)=>Promise<string>;/** May resolve to the QQ ids of the bubbles it sent, so a later quote of one can be matched. */send:(job:Accepted,text:string,signal:AbortSignal)=>Promise<void|unknown[]>;log:(message:string)=>void;change:()=>void;react?:(job:Accepted,emojiId:string)=>Promise<boolean>}
+/** In QQ a picture is usually its own message and the "@bot 看看" follows it; a direct @ without images borrows the room's pictures from this long ago. */
+export const RECENT_MEDIA_WINDOW_MS=300_000;
 export class Engine {
  running=false;sent=0;errors=0;ignored=0;merged=0;expired=0;
  /** Ids the bot has sent, so a quote-reply to one is treated as talking to us. */
  readonly selfMessages=new SelfMessageLog();
  /** Tracks groups where the bot just spoke, so a reply to it can be noticed without an @. */
  readonly followups=new FollowupTracker();
+ /** Rolling per-group recent-chat buffer so an @ reply reads room history and recent images. */
+ readonly context=new GroupContext();
  /** QQ nickname of the logged-in account; set by the app so being called by name counts. */
  selfName='';
  private proactive=new Proactive(()=>engagementTuning(this.config.engagement));
  private rooms:GroupSessions;
  private sessionTimer:unknown;
  private seen=new Map<string,number>();
+ private recorded=new Map<string,number>();
+ /** QQ number of the logged-in account, kept so the bot's own replies can be recorded into the room buffer. */
+ private selfId='';
  private history=new Map<string,ChatMessage[]>();
  private generation=0;
  private scheduler:ConversationScheduler;
@@ -47,7 +56,7 @@ export class Engine {
  /** Groups currently in continuous participation; used for status display only and never contains message text. */
  get groupSessions(){return this.rooms.view(this.clock.now());}
  start(){this.running=true;this.scheduler.start();}
- pause(){this.running=false;this.generation++;this.proactive.reset();this.rooms.clear();this.followups.clear();this.clearSessionTimer();this.scheduler.stop();}
+ pause(){this.running=false;this.generation++;this.proactive.reset();this.rooms.clear();this.followups.clear();this.context.clear();this.recorded.clear();this.clearSessionTimer();this.scheduler.stop();}
  clear(){this.pause();this.history.clear();this.selfMessages.clear();this.scheduler.clearCooldown();this.deps.change();}
  updateConfig(next:Config){
   const old=this.config;this.config=next;
@@ -57,7 +66,7 @@ export class Engine {
   }
   if(JSON.stringify(old.blocked)!==JSON.stringify(next.blocked)){
    for(const user of new Set([...old.blocked,...next.blocked])){
-    this.scheduler.cancelWhere(j=>j.user===user);
+    this.scheduler.cancelWhere(j=>j.user===user);this.context.forget(user);
     this.history.delete(`p:${user}`);
     for(const key of this.history.keys())if(key.startsWith('g:')&&key.endsWith(`:${user}`))this.history.delete(key);
    }
@@ -70,13 +79,30 @@ export class Engine {
  clearTarget(kind:TargetKind,id:string){
   if(kind==='group'){this.proactive.directed(id,this.clock.now());this.rooms.close(id);}
   if(kind==='group')this.followups.close(id);
+  if(kind==='group')this.context.clearGroup(id);
   this.scheduler.cancelWhere(j=>kind==='group'?j.group===id:!j.group&&j.user===id);
   for(const key of this.history.keys())if(kind==='group'?key.startsWith(`g:${id}:`):key===`p:${id}`)this.history.delete(key);
+ }
+ private recordContext(e:any,self:string,now:number){
+  if(e?.post_type!=='message'||e?.message_type!=='group'||String(e.self_id)!==self||!Array.isArray(e.message)||e.message_id==null)return;
+  const group=String(e.group_id),user=String(e.user_id);
+  if(!/^\d{5,16}$/.test(user)||this.config.blocked.includes(user))return;
+  if(!resolveTarget(this.config,'group',group).enabled)return;
+  const id=group+':'+String(e.message_id);
+  if(this.recorded.has(id))return;
+  for(const [k,t] of this.recorded)if(now-t>600000)this.recorded.delete(k);
+  this.recorded.set(id,now);if(this.recorded.size>10000)this.recorded.delete(this.recorded.keys().next().value!);
+  const summary=messageSummary(e);if(!summary.text)return;
+  // A leaked decision envelope echoed back as the bot's own line would teach the model to repeat it.
+  if(user===self&&looksLikeDecision(summary.text))return;
+  this.context.record(group,{id,user,text:summary.text,time:now,fromBot:user===self,media:summary.media},now);
  }
  receive(event:unknown,self:string){
   if(!this.running)return;
   const now=this.clock.now();this.expireSessions(now);
   const e=event as any;
+  this.selfId=self;
+  this.recordContext(e,self,now);
   let job=route(event,this.config,self,now);
   let context:Accepted|null=null;
   // Being quoted or called by name is as direct as an @: answer it properly instead of
@@ -130,7 +156,7 @@ export class Engine {
     // An explicit @ replaces older pending judgments in the same group, but never aborts a running reply.
     this.scheduler.cancelQueued(j=>j.session===true&&j.group===room);
     if(resolveTarget(this.config,'group',room).session){
-     if(!this.rooms.active(room,now))this.rooms.open(room,'mention',now);
+     if(!this.rooms.active(room,now))this.rooms.open(room,'mention',now,this.roomSeed(room,job!,now));
      const context=this.rooms.touch(room,sender,job!.text,now);
      if(context)job={...job!,sessionContext:context};
     }
@@ -153,6 +179,22 @@ export class Engine {
   if(next===null)return;
   this.sessionTimer=this.clock.setTimer(()=>{this.sessionTimer=undefined;this.expireSessions(this.clock.now());},Math.max(1,next-now));
  }
+ /** Context ids (`group:message_id`) of the message(s) a job answers; they are already the user turn. */
+ private ownIds(job:Accepted){return new Set([job.rawMessageId,...(job.rawMessageIds??[])].filter(Boolean).map(id=>job.group+':'+id));}
+ /** What the room said before an @ opened a session, so the first reply is not blind to the thread that caused it. */
+ private roomSeed(room:string,job:Accepted,now:number){
+  const own=this.ownIds(job);
+  return this.context.recent(room,now).filter(l=>!own.has(l.id)).map(l=>({user:l.user,text:l.text,fromBot:l.fromBot}));
+ }
+ /** Ask QQ for a quoted message that already left the room buffer. Best effort: a failure only means "no quote". */
+ private async fetchQuoted(group:string,quotedId:string,id:string,now:number,signal:AbortSignal):Promise<ContextLine|undefined>{
+  try{
+   const fetched=await this.deps.fetchMessage!(quotedId,group,signal);
+   // The same gates as recordContext: a blocked member's words never reach the model, quoted or not.
+   if(!fetched||!fetched.text||!/^\d{5,16}$/.test(fetched.user)||this.config.blocked.includes(fetched.user))return undefined;
+   return {id,user:fetched.user,text:fetched.text,time:now,fromBot:fetched.user===this.selfId,media:fetched.media};
+  }catch(e){this.deps.log('无法读取被引用的消息，按没有引用处理：'+(e instanceof Error?e.message:'未知错误'));return undefined;}
+ }
  private async reply(job:Accepted,signal:AbortSignal){
   const epoch=this.generation;
   const current=()=>this.running&&epoch===this.generation&&!signal.aborted;
@@ -160,16 +202,43 @@ export class Engine {
   const profile=resolveTarget(this.config,job.group?'group':'friend',job.group||job.user);
   if(!profile.enabled)return;
   const inRoom=!job.proactive&&!!job.group&&profile.session;
-  const messages:ChatMessage[]=job.proactive?proactiveMessages(job,profile.prompt,this.config.engagement):job.followup?followupMessages(job,profile.prompt,this.followups.lines(job.group||''),this.proactive.recent(job.group||'',this.clock.now())):inRoom?sessionMessages(job,profile.prompt,job.sessionContext,!job.session,this.config.engagement):[
-   {role:'system',content:profile.prompt},...(profile.historyTurns>0?(this.history.get(job.key)||[]).slice(-profile.historyTurns*2):[]),{role:'user',content:job.text}
+  // Someone explicitly @-ing the bot (not a proactive/session/follow-up judgment the bot makes on its own).
+  const direct=!job.proactive&&!job.session&&!job.followup;
+  const now=this.clock.now();
+  const own=this.ownIds(job);
+  const room:ContextLine[]=job.group?this.context.recent(job.group,now).filter(l=>!own.has(l.id)):[];
+  // A quote-reply names the exact message (often an image) the user means. The reply stays synchronous
+  // up to the model call unless QQ has to be asked for a message that already left the buffer.
+  const quotedId=job.group&&job.quotedId&&!job.proactive?job.group+':'+job.quotedId:'';
+  let quoted=quotedId?this.context.find(job.group!,quotedId,now):undefined;
+  if(quotedId&&!quoted&&this.deps.fetchMessage){quoted=await this.fetchQuoted(job.group!,job.quotedId!,quotedId,now,signal);if(!current())return;}
+  // Follow-up judgments describe the room by member; the bot's own lines are passed separately.
+  const roomLines=room.filter(l=>!l.fromBot).slice(-12).map(l=>({user:l.user,text:l.text}));
+  // Per-user memory holds only the exchange itself, never the room snapshot or judgment prompts of the moment.
+  const exchange:ChatMessage[]=[...(profile.historyTurns>0?(this.history.get(job.key)||[]).slice(-profile.historyTurns*2):[]),{role:'user',content:job.text}];
+  const messages:ChatMessage[]=job.proactive?proactiveMessages(job,profile.prompt,this.config.engagement):job.followup?followupMessages(job,profile.prompt,this.followups.lines(job.group||''),roomLines.length?roomLines:this.proactive.recent(job.group||'',now)):inRoom?sessionMessages(job,profile.prompt,job.sessionContext,!job.session,this.config.engagement):[
+   {role:'system',content:profile.prompt},
+   ...(job.group?contextMessages(room,{asker:job.user,quoted}):[]),
+   ...exchange
   ];
   try{
    let requestMessages=messages;
-   if(job.media?.length){
-    const media:PreparedMedia=this.deps.prepareMedia?await this.deps.prepareMedia(job.media,this.config.visionEnabled===true,signal):{parts:[],images:0,ocr:0,failed:job.media.length};
+   let mediaRefs=job.media,mediaOmitted=job.mediaOmitted??0,origin:MediaOrigin='message';
+   if(job.group&&!job.proactive&&(!mediaRefs||!mediaRefs.length)){
+    // The quoted message's own pictures are exactly what "这个" means; otherwise a direct @ may be
+    // about a picture posted moments earlier as its own message. Self-initiated judgments do not
+    // borrow room pictures: that would put every ambient line through vision.
+    if(quoted?.media.length){mediaRefs=quoted.media.slice(0,MAX_MEDIA_IMAGES);mediaOmitted=0;origin='quoted';this.deps.log('附加被引用消息里的 '+mediaRefs.length+' 张图片供识别');}
+    else if(direct){
+     const recent=this.context.recentMedia(job.group,now,RECENT_MEDIA_WINDOW_MS);
+     if(recent.length){mediaRefs=recent;mediaOmitted=0;origin='recent';this.deps.log('附加群里最近 '+recent.length+' 张图片供识别');}
+    }
+   }
+   if(mediaRefs?.length){
+    const media:PreparedMedia=this.deps.prepareMedia?await this.deps.prepareMedia(mediaRefs,this.config.visionEnabled===true,signal):{parts:[],images:0,ocr:0,failed:mediaRefs.length};
     if(!current())return;
     if(job.proactive&&!this.proactive.allowed(job,this.clock.now(),this.config))return;
-    requestMessages=withPreparedMedia(messages,media,job.mediaOmitted??0);
+    requestMessages=withPreparedMedia(messages,media,mediaOmitted,origin);
     const detail=describeMediaIssues(media);
     this.deps.log(`图片处理：${media.images} 张提供视觉输入，${media.ocr} 张取得文字，${media.failed} 张不可识别；原图识别${this.config.visionEnabled?'开启':'关闭'}${media.previews?`；${media.previews} 张使用同一表情静态预览`:''}${detail?'；'+detail:''}（不记录原图或地址）`);
    }
@@ -191,9 +260,18 @@ export class Engine {
     return;
    }
    // The lane remains held until send completes. Uncertain sends are never retried.
-   await this.deps.send(job,answer,signal);
+    const outgoing=unwrapReply(answer);
+    if(outgoing===null){this.deps.log('模型输出为内部决策结构，按沉默处理');return;}
+    answer=outgoing;
+   const sent=await this.deps.send(job,answer,signal);
    if(!current())return;
    const delivered=this.clock.now();
+   // The transport does not echo the bot's own messages, so the room buffer learns the reply here;
+   // a later echo of the same words is dropped by the buffer.
+   if(job.group){
+    const alias=(Array.isArray(sent)?sent:[]).filter(id=>id!=null&&id!=='').map(id=>job.group+':'+String(id));
+    this.context.record(job.group,{id:'bot:'+job.messageId+':'+delivered,alias,user:this.selfId,text:answer,time:delivered,fromBot:true,media:[]},delivered);
+   }
    // Answering someone invites a reply, so watch for one. An UNPROMPTED interjection does not:
    // in a group the user did not put in session mode, that setting means "occasionally chime
    // in", and letting one interjection pull the bot into a conversation would override it.
@@ -207,7 +285,7 @@ export class Engine {
    if(!job.proactive&&job.group)this.proactive.directed(job.group,this.clock.now());
    if(!job.proactive&&!profile.session&&profile.historyTurns>0){
     this.history.delete(job.key);
-    this.history.set(job.key,[...messages.slice(1),{role:'assistant' as const,content:answer}].slice(-profile.historyTurns*2));
+    this.history.set(job.key,[...exchange,{role:'assistant' as const,content:answer}].slice(-profile.historyTurns*2));
     if(this.history.size>100)this.history.delete(this.history.keys().next().value!);
    }
    this.sent++;

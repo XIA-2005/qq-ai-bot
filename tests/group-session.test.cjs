@@ -23,11 +23,12 @@ test('session mode needs an explicit @ to start; afterwards every member can tal
  assert.equal(calls.length,0);
  await reply(engine,ev,2,{message:[at(self),text('在吗')]});
  assert.equal(sent.length,1);assert.equal(sent[0].t,'普通回复');assert.equal(sent[0].j.session,undefined);assert.equal(sent[0].j.group,group);
- assert.equal(engine.groupSessions.length,1);assert.equal(engine.groupSessions[0].origin,'mention');assert.equal(engine.groupSessions[0].members,1);
+ assert.equal(engine.groupSessions.length,1);assert.equal(engine.groupSessions[0].origin,'mention');assert.equal(engine.groupSessions[0].members,2,'the line said before the @ seeds the room');
  await reply(engine,ev,3,{user_id:bob,message:[text('我觉得也不错')]});
  assert.equal(calls.length,2);assert.equal(sent[1].j.session,true);assert.equal(sent[1].t,'我也这么觉得');assert.equal(sent[1].j.group,group);
- assert.deepEqual(room(calls[1]).map(l=>l.speaker),['成员1','机器人','成员2']);
- assert.equal(room(calls[1])[0].text,'在吗');assert.equal(room(calls[1])[1].text,'普通回复');
+ // The room opens with what was said before the @, so the first session judgment is not blind to it.
+ assert.deepEqual(room(calls[1]).map(l=>l.speaker),['成员1','成员2','机器人','成员1']);
+ assert.deepEqual(room(calls[1]).map(l=>l.text),['讨论内容1','在吗','普通回复','我觉得也不错']);
  assert.equal(engine.groupSessions[0].members,2);assert.equal(engine.groupSessions[0].replies,2);
  assert.equal(JSON.stringify(engine.groupSessions).includes('我觉得也不错'),false);
 });

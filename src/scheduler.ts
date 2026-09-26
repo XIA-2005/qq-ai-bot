@@ -69,7 +69,8 @@ export class ConversationScheduler {
   const previous=!job.proactive?this.openBatch(job.key):undefined;
   if(previous&&previous.job.text.length+1+job.text.length<=BATCH_TEXT_LIMIT&&(previous.job.media?.length??0)+(job.media?.length??0)<=MAX_MEDIA_IMAGES){
    const media=[...(previous.job.media??[]),...(job.media??[])];
-   previous.job={...previous.job,text:previous.job.text+'\n'+job.text,...(media.length?{media}:{}),...((previous.job.mediaOmitted??0)+(job.mediaOmitted??0)>0?{mediaOmitted:(previous.job.mediaOmitted??0)+(job.mediaOmitted??0)}:{})};previous.count++;
+   const rawMessageIds=[...(previous.job.rawMessageIds??(previous.job.rawMessageId?[previous.job.rawMessageId]:[])),...(job.rawMessageId?[job.rawMessageId]:[])];
+   previous.job={...previous.job,text:previous.job.text+'\n'+job.text,...(rawMessageIds.length?{rawMessageIds}:{}),...(media.length?{media}:{}),...((previous.job.mediaOmitted??0)+(job.mediaOmitted??0)>0?{mediaOmitted:(previous.job.mediaOmitted??0)+(job.mediaOmitted??0)}:{}),...(previous.job.quotedId??job.quotedId?{quotedId:previous.job.quotedId??job.quotedId}:{})};previous.count++;
    previous.ready=Math.min(now+settings.mergeWindowMs,previous.created+MERGE_MAX_MS);
    if(previous.count>=BATCH_MESSAGE_LIMIT)previous.ready=now;
    this.deps.merged();this.pump();return true;

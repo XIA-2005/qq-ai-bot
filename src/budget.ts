@@ -90,16 +90,44 @@ function priceMicro(raw: string) {
   const [whole, part = ""] = raw.split(".");
   return BigInt(whole) * 1_000_000n + BigInt(part.padEnd(6, "0"));
 }
+/**
+ * Tokens held per attached image. DeepSeek bills an image as at most 384 input tokens; the
+ * base64 payload itself must not be counted as text, or one photo (hundreds of KB) would look
+ * like a ¥1 request and trip the ¥0.50 per-target limit before anything was spent.
+ */
+export const IMAGE_TOKEN_HOLD = 1024;
+/** Text-only shape of the request for size estimation: image data is replaced by a short marker. */
+function textShape(messages: ChatMessage[]): {
+  messages: ChatMessage[];
+  images: number;
+} {
+  let images = 0;
+  const shaped = messages.map((m) =>
+    typeof m.content === "string"
+      ? m
+      : {
+          ...m,
+          content: m.content.map((part) => {
+            if (part.type !== "image_url") return part;
+            images++;
+            return { type: "text" as const, text: "[image]" };
+          }),
+        },
+  );
+  return { messages: shaped, images };
+}
 function reservation(
   config: Pick<Config, "maxTokens">,
   messages: ChatMessage[],
   pricing: Pricing,
 ) {
+  const shape = textShape(messages);
   const checked = validatePricing(pricing),
     input = BigInt(
-      Buffer.byteLength(JSON.stringify(messages), "utf8") +
+      Buffer.byteLength(JSON.stringify(shape.messages), "utf8") +
         1024 +
-        messages.length * 256,
+        messages.length * 256 +
+        shape.images * IMAGE_TOKEN_HOLD,
     );
   const miss =
     priceMicro(checked.cacheMiss) > priceMicro(peakPricing.cacheMiss)
@@ -109,7 +137,7 @@ function reservation(
     priceMicro(checked.output) > priceMicro(peakPricing.output)
       ? priceMicro(checked.output)
       : priceMicro(peakPricing.output);
-  // JSON byte length conservatively overestimates text token count; images may exceed the small default budget.
+  // JSON byte length conservatively overestimates text token count; images are held at a fixed allowance each.
   const bound = input * miss + BigInt(config.maxTokens + 128) * output;
   return bound > MIN_RISK_PICO ? bound : MIN_RISK_PICO;
 }

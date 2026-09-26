@@ -42,13 +42,14 @@ export class GroupSessions {
   const state=this.map.get(group);if(!state)return;
   this.push(state,BOT_LABEL,text,now);state.replies++;
  }
- open(group:string,origin:SessionOrigin,now:number,seed?:{user:string;text:string}[]){
+ /** `seed` pre-fills the room with lines said before it opened, so the first reply is not blind to the thread that caused it; bot lines keep the 机器人 label. */
+ open(group:string,origin:SessionOrigin,now:number,seed?:{user:string;text:string;fromBot?:boolean}[]){
   const existing=this.map.get(group);
   if(existing&&this.active(group,now)){if(origin==='mention')existing.origin='mention';existing.activity=now;return;}
   while(this.map.size>=this.limit)this.map.delete(this.map.keys().next().value!);
   const state:State={origin,opened:now,activity:now,lines:[],labels:new Map(),members:[],replies:0};
   this.map.set(group,state);
-  if(seed)for(const line of seed)this.push(state,this.label(state,line.user),line.text,now);
+  if(seed)for(const line of seed)this.push(state,line.fromBot?BOT_LABEL:this.label(state,line.user),line.text,now);
  }
  close(group:string){return this.map.delete(group);}
  clear(){this.map.clear();}

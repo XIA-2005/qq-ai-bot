@@ -1,9 +1,10 @@
 import WebSocket from 'ws';
 import {randomUUID} from 'node:crypto';
 import {setTimeout as sleep} from 'node:timers/promises';
-import {Accepted,faceIdForName} from './config';
+import {Accepted,faceIdForName,messageSummary} from './config';
 import {typingMs,thinkMs,splitOnBareSpace} from './humanize';
 import {prepareMedia,MediaReference,PreparedMedia} from './media';
+import {looksLikeDecision} from './reply-envelope';
 
 /** Turn a reply line into OneBot segments, converting [表情: 名称] into real QQ faces. */
 export function buildMessageSegments(text:string):{type:string;data:Record<string,string>}[]{
@@ -153,6 +154,18 @@ export class OneBot{
   if(!messageId||!emojiId)return false;
   try{await this.call('set_msg_emoji_like',{message_id:messageId,emoji_id:emojiId,set:true});return true;}catch{return false;}
  }
+ /** Load one message by id, for a quote-reply whose target already left the room buffer. Null when QQ returns nothing usable
+  * or the message is not from `group` (an id must never pull a private or other-group message into a reply); errors propagate. */
+ async fetchMessage(id:string,group:string,signal?:AbortSignal):Promise<{user:string;text:string;media:MediaReference[]}|null>{
+  if(!/^-?\d{1,20}$/.test(id))return null;
+  const raw=await this.call('get_msg',{message_id:Number.isSafeInteger(Number(id))?Number(id):id},{signal,timeoutMs:8000});
+  if(!raw||!Array.isArray(raw.message))return null;
+  if(raw.message_type!==undefined&&raw.message_type!=='group')return null;
+  if(raw.group_id!==undefined&&raw.group_id!==null&&String(raw.group_id)!==group)return null;
+  const summary=messageSummary({message:raw.message.filter((s:any)=>s&&typeof s==='object')});
+  if(!summary.text)return null;
+  return {user:String(raw.sender?.user_id??raw.user_id??''),text:summary.text,media:summary.media};
+ }
  /** Best-effort nudge. Never throws. */
  async poke(job:Accepted):Promise<boolean>{
   try{
@@ -166,9 +179,12 @@ export class OneBot{
   if(job.group)return;
   try{await this.call('set_input_status',{user_id:job.user,event_type:on?1:0});}catch{}
  }
- async send(job:Accepted,text:string,delayMs=300,signal?:AbortSignal){
-  const parts=splitReplyMessages(text);
-  if(!parts.length)return;
+ /** Resolves to the QQ message ids of the bubbles that were sent (empty when nothing went out). */
+ async send(job:Accepted,text:string,delayMs=300,signal?:AbortSignal):Promise<unknown[]>{
+  // Transport-level backstop: a bubble that is only an internal decision never reaches QQ.
+  const parts=splitReplyMessages(text).filter(part=>!looksLikeDecision(part));
+  const ids:unknown[]=[];
+  if(!parts.length)return ids;
   let shown=false;
   try{
    for(let i=0;i<parts.length;i++){
@@ -188,12 +204,13 @@ export class OneBot{
     signal?.throwIfAborted();
     // Once a frame reaches QQ we cannot retract it; cancellation prevents any later frames.
     const res=await this.call(job.group?'send_group_msg':'send_private_msg',job.group?{group_id:job.group,message}:{user_id:job.user,message},{signal});
-    if(res&&res.message_id!==undefined)this.onSent?.(res.message_id);
+    if(res&&res.message_id!==undefined){ids.push(res.message_id);this.onSent?.(res.message_id);}
     if(!this.humanize&&i<parts.length-1&&delayMs>0){
      await sleep(delayMs,undefined,{signal});
     }
    }
   }finally{if(shown)await this.typing(job,false);}
+  return ids;
  }
  private failPending(){for(const p of this.pending.values()){clearTimeout(p.timer);p.reject(new Error('QQ 连接已断开'))}this.pending.clear();}
  close(){this.stopped=true;clearTimeout(this.timer);clearInterval(this.heartbeat);const old=this.ws;this.ws=undefined;old?.terminate();this.failPending();this.connected=false;this.self='';this.status='未连接';this.disconnect();this.change();}

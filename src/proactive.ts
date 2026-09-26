@@ -1,6 +1,8 @@
 import {Accepted,ChatMessage,Config} from './config';
 import {resolveTarget} from './profiles';
 import {DEFAULT_ENGAGEMENT,EngagementTuning,engagementTone,engagementTuning,AMBIENT_STANCE} from './engagement';
+import {parseDecision} from './reply-envelope';
+export {unwrapReply} from './reply-envelope';
 // Context retention is deliberately independent of the speaking cooldown: a chatty dial must not shrink the room context.
 const CONTEXT_WINDOW=5*60_000, HOUR=60*60_000, MAX_AGE=90_000;
 interface GroupState {lines:{user:string;text:string;time:number}[];fresh:number;revision:number;checked:number;attempted:number;hits:number[]}
@@ -45,8 +47,10 @@ export function proactiveMessages(j:Accepted,persona:string,level:number=DEFAULT
  {role:'system',content:AMBIENT_HEAD+AMBIENT_STANCE[engagementTone(level)]+AMBIENT_TAIL},
  {role:'user',content:j.text}
 ];}
+/** Decision-path output: only a positive envelope with usable text speaks; anything else (including
+ * plain prose that ignored the JSON instruction) stays silent. Fenced or slightly malformed envelopes
+ * are still understood, so a real answer is not lost to a formatting slip. */
 export function parseProactive(raw:string):string|null {
- try{const x=JSON.parse(raw);if(x?.reply!==true||typeof x.text!=='string')return null;
- const text=x.text.trim();if(!text||text.length>280||/\[CQ:|@全体/.test(text))return null;return text;
- }catch{return null;}
+ const d=parseDecision(raw);if(!d||!d.reply||typeof d.text!=='string')return null;
+ const text=d.text.trim();if(!text||text.length>280||/\[CQ:|@全体/.test(text))return null;return text;
 }

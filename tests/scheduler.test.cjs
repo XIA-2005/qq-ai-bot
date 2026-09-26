@@ -51,8 +51,8 @@ test('continuous typing seals a batch at five seconds without extending its dead
 });
 test('private users and group authors never share merged content or memories',async t=>{
  const s=setup(t);s.receive('私聊甲');s.receive('私聊乙',{user_id:234567});s.group('群甲');s.group('群乙',234567);
- await s.clock.advance(1500);assert.equal(s.inputs.length,3);assert.ok(s.inputs.every(m=>m.length===2));
- await s.clock.advance(5000);assert.equal(s.inputs.length,4);assert.equal(s.inputs[3].at(-1).content,'群乙');assert.equal(s.inputs[3].length,2);
+ await s.clock.advance(1500);assert.equal(s.inputs.length,3);assert.ok(s.inputs.slice(0,2).every(m=>m.length===2),'private prompts carry no room context');assert.ok(s.inputs.every(m=>!JSON.stringify(m.slice(0,-1)).includes('私聊')),'private content never becomes anyone\'s context');
+ await s.clock.advance(5000);assert.equal(s.inputs.length,4);assert.equal(s.inputs[3].at(-1).content,'群乙');assert.equal(s.inputs[3].filter(m=>m.role==='assistant').length,0,'group authors never inherit each other\'s memory');assert.ok(!JSON.stringify(s.inputs[3]).includes('私聊'),'private content never reaches a group prompt');
 });
 test('group follow-up without @ is limited to the same author and open mention batch',async t=>{
  const s=setup(t);s.group('帮我看下');await s.clock.advance(400);s.group('其他人的普通聊天',234567,654321,false);
@@ -148,8 +148,16 @@ test('same group uses one lane across authors; separate groups can run concurren
  const gates=[];const s=setup(t,{config:{mergeWindowMs:0,cooldown:1},generate:()=>{const d=deferred();gates.push(d);return d.promise}});
  s.group('群一甲');s.group('群一乙',234567);s.group('群二甲',123456,765432);
  assert.equal(s.engine.activeCount,2);assert.equal(s.inputs.length,2);await s.clock.advance(1000);
- gates[0].resolve('群一甲答');await settle();assert.equal(s.inputs.length,3);assert.equal(s.inputs[2].length,2);
+ gates[0].resolve('群一甲答');await settle();assert.equal(s.inputs.length,3);assert.equal(s.inputs[2].at(-1).content,'群一乙');assert.equal(s.inputs[2].filter(m=>m.role==='assistant').length,0,'room context is shared, memory is not');
  gates[1].resolve('群二答');gates[2].resolve('群一乙答');await settle();assert.equal(s.sent.length,3);
+});
+test('a merged group batch keeps every folded message out of the room context',async t=>{
+ const s=setup(t,{config:{mergeWindowMs:1500}});
+ s.group('先说一句',123456,654321,false);await s.clock.advance(10); // no @: context only
+ s.group('第一条');s.group('第二条');s.group('第三条');await s.clock.advance(1500);
+ assert.equal(s.inputs.length,1);const m=s.inputs[0];assert.equal(m.at(-1).content,'第一条\n第二条\n第三条');
+ const ctx=JSON.stringify(m.slice(0,-1));assert.ok(ctx.includes('先说一句'),'the earlier room line is context');
+ for(const line of ['第一条','第二条','第三条'])assert.ok(!ctx.includes(line),line+' is the user turn, not context');
 });
 test('generation failure releases only its own lane and neither retries nor poisons history',async t=>{
  let n=0;const s=setup(t,{config:{mergeWindowMs:0,cooldown:1},generate:()=>++n===1?Promise.reject(new Error('provider failed')):Promise.resolve('后续成功')});

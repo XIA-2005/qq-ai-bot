@@ -135,7 +135,24 @@ export function faceLabel(s:any):string|null{
  return null;
 }
 export type RouteMode='direct'|'ambient'|'session'|'context';
-export interface Accepted {key:string;messageId:string;rawMessageId?:string;user:string;group?:string;text:string;media?:MediaReference[];mediaOmitted?:number;proactive?:boolean;followup?:boolean;observedAt?:number;revision?:number;session?:boolean;sessionContext?:SessionContext}
+export interface Accepted {key:string;messageId:string;rawMessageId?:string;/** Every raw id folded into this job by batching; the room-context filter excludes all of them. */rawMessageIds?:string[];/** Raw id of the message this one quote-replies to (QQ 回复), so the exact image or line meant by “这个” can be looked up. */quotedId?:string;user:string;group?:string;text:string;media?:MediaReference[];mediaOmitted?:number;proactive?:boolean;followup?:boolean;observedAt?:number;revision?:number;session?:boolean;sessionContext?:SessionContext}
+/** Extract display text + media refs from a raw OneBot message array (mirrors route()'s parsing). */
+export function messageSummary(e:any):{text:string;media:MediaReference[];mediaOmitted:number}{
+ const textParts:string[]=[];const media:MediaReference[]=[];let mediaOmitted=0;
+ for(const s of e.message){
+  if(!s||typeof s!=='object')continue;
+  if(s.type==='text'&&typeof s.data?.text==='string'){if(s.data.text.trim())textParts.push(s.data.text);}
+  else if(s.type==='face'){const label=faceLabel(s);if(label)textParts.push(label);}
+  else if(s.type==='image'||s.type==='mface'||s.type==='marketface'||s.type==='bface'){
+   const ref=mediaReference(s);if(!ref)continue;
+   const label=faceLabel(s);if(label)textParts.push(label);
+   if(ref.ocrText)textParts.push('[图片文字: '+ref.ocrText+']');
+   if(!label&&!ref.ocrText)textParts.push('[图片]');
+   if(media.length<MAX_MEDIA_IMAGES)media.push(ref);else mediaOmitted++;
+  }
+ }
+ return {text:textParts.join(' ').trim(),media,mediaOmitted};
+}
 export function route(e:any,c:Config,self:string,now=Date.now(),ambient:boolean|RouteMode=false):Accepted|null {
  const mode:RouteMode=ambient===true?'ambient':ambient===false?'direct':ambient;
  if(!self||e?.post_type!=='message'||String(e.self_id)!==self||String(e.user_id)===self||!/^\d{5,16}$/.test(String(e.user_id))||e.message_id==null)return null;
@@ -174,5 +191,7 @@ export function route(e:any,c:Config,self:string,now=Date.now(),ambient:boolean|
  // Without image-upload consent, bare photos do not initiate autonomous group judgments.
  if(mode==='ambient'&&c.visionEnabled!==true&&textParts.every(p=>p==='[图片]'))return null;
  if(!text||text.length>4000)return null;
- return {key:group?`g:${group}:${user}`:`p:${user}`,messageId:`${self}:${e.message_type}:${group||user}:${e.message_id}`,rawMessageId:String(e.message_id),user,group,text,...(media.length?{media}:{}),...(mediaOmitted?{mediaOmitted}:{})};
+ // Only a plausible OneBot message id is kept; anything else is not looked up.
+ const quotedSeg=e.message.find((s:any)=>s?.type==='reply'&&s.data?.id!=null&&/^-?\d{1,20}$/.test(String(s.data.id)));
+ return {key:group?`g:${group}:${user}`:`p:${user}`,messageId:`${self}:${e.message_type}:${group||user}:${e.message_id}`,rawMessageId:String(e.message_id),...(quotedSeg?{quotedId:String(quotedSeg.data.id)}:{}),user,group,text,...(media.length?{media}:{}),...(mediaOmitted?{mediaOmitted}:{})};
 }
