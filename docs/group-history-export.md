@@ -40,4 +40,4 @@ node tools/export-group-history.cjs --group 123456 --member 234567
 
 原始消息可含所有群成员的 QQ 号、群名片、聊天正文及**可短期访问的媒体链接**；不要提交 Git、共享给他人或上传云盘，做好本机访问权限及群成员知情。桌面入口和独立脚本均不受机器人的“回复白名单”开关控制，**请仅导出你有权处理的群和成员记录**。
 
-离线测试：`node --test tests/group-history-export.test.cjs`，使用假的本机 WebSocket、假群号、假消息和假令牌；没有读取项目现有 `artifacts/qq-history/` 或私人聊天导出，也没有连接真实 QQ。需要在已获授权的测试群人工核对 NapCat 的历史上限、翻页顺序与实际条数。
+离线测试：`node --test tests/group-history-export.test.cjs`，使用假的本机 WebSocket、假群号、假消息和假令牌；没有读取项目现有 `artifacts/qq-history/` 或私人聊天导出。另已对获授权的**指定真实群**通过本机 NapCat 共用服务链路核对整群及成员筛选和结构，两个结果都是 `partial/pagination-stalled`；接口返回不足以证明更早记录是否已覆盖。真实桌面 Electron 按钮手动点击及其他群、其他账号仍需分别授权后验收。

@@ -1,6 +1,8 @@
 # Windows 安装器（仅桌面界面，不含 QQ 运行时）
 
-**适用范围：** `QQ-AI-Bot-Setup-0.9.3-external-runtime.exe` 是单文件 Windows 10/11 x64 NSIS 安装器；可独立安装、打开当前版本的 Electron 桌面设置界面。**安装器不含 NapCat、QQ 本地 DLL、QQ 客户端、账户数据或 API Key。默认不能扫码登录 QQ、收消息或自动回复；桌面界面可用不等于 QQ 功能可用。** 未签名的安装器可能被 Windows SmartScreen 提醒，请先核对发布页 SHA-256，不要忽略来源风险。
+> **历史版本说明：**本文针对 v0.9.3 的仅界面安装器；v0.9.6 GitHub Release [仅发布源码及使用方法](releases/v0.9.6-public.md)，并未附上本文所述的安装器。自行在本机为 v0.9.6 运行 `npm run pack:external-win` 时也不包含 QQ/NapCat，不能当作开箱即用的完整机器人。
+
+**适用范围：** `QQ-AI-Bot-Setup-0.9.3-external-runtime.exe` 是单文件 Windows 10/11 x64 NSIS 安装器；可独立安装、打开 v0.9.3 的 Electron 桌面设置界面。**安装器不含 NapCat、QQ 本地 DLL、QQ 客户端、账户数据或 API Key。默认不能扫码登录 QQ、收消息或自动回复；桌面界面可用不等于 QQ 功能可用。** 未签名的安装器可能被 Windows SmartScreen 提醒，请先核对发布页 SHA-256，不要忽略来源风险。
 
 ## 想要启用 QQ 登录时
 
