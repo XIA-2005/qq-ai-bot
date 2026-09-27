@@ -195,7 +195,7 @@ export class OneBot{
  /** Resolves to the QQ message ids of the bubbles that were sent (empty when nothing went out). */
  async send(job:Accepted,text:string,delayMs=300,signal?:AbortSignal):Promise<unknown[]>{
   // Transport-level backstop: a bubble that is only an internal decision never reaches QQ.
-  const parts=splitReplyMessages(text).filter(part=>!looksLikeDecision(part));
+  const parts=(job.deliveryShaped?text.split(/\r?\n/).map(part=>part.trim()).filter(Boolean):splitReplyMessages(text)).filter(part=>!looksLikeDecision(part));
   const ids:unknown[]=[];
   if(!parts.length)return ids;
   let shown=false,prefixed=false;

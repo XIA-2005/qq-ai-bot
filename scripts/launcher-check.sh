@@ -34,6 +34,9 @@ wait_marker() {
 
 A="$T/only-release"; mkdir -p "$A"; cp "$ROOT/启动机器人.exe" "$A/启动机器人.exe"
 make_package "$A" 0.9.1 release
+"$A/启动机器人.exe" --check-launch-version=0.9.1
+if "$A/启动机器人.exe" --check-launch-version=0.9.2; then echo 'Wrong expected version should be rejected' >&2; exit 1; fi
+test ! -e "$A/release-v0.9.1/win-unpacked/marker.txt"
 "$A/启动机器人.exe"
 wait_marker "$A/release-v0.9.1/win-unpacked/marker.txt"
 echo 'PASS only latest release'
@@ -46,6 +49,8 @@ echo 'PASS scripts/launcher.exe shares the root selector'
 B="$T/secure-and-release"; mkdir -p "$B"; cp "$ROOT/启动机器人.exe" "$B/启动机器人.exe"
 make_package "$B" 0.9.0 secure
 make_package "$B" 0.9.1 release
+"$B/启动机器人.exe" --check-launch-version=0.9.1
+if "$B/启动机器人.exe" --check-launch-version=0.9.0; then echo 'Older secure fallback should not pass release verification' >&2; exit 1; fi
 "$B/启动机器人.exe"
 wait_marker "$B/release-v0.9.1/win-unpacked/marker.txt"
 test ! -e "$B/artifacts/mcp-secure-remote/packaged/win-unpacked/marker.txt"
@@ -57,6 +62,7 @@ make_package "$C" 0.9.2 release
 printf 'tampered' >> "$C/release-v0.9.2/win-unpacked/QQ AI Bot.exe"
 if "$C/启动机器人.exe" --check-launch-target; then echo 'Corrupt package should be rejected' >&2; exit 1; fi
 make_package "$C" 0.9.1 secure
+if "$C/启动机器人.exe" --check-launch-version=0.9.2; then echo 'Corrupt newest release should not pass verification' >&2; exit 1; fi
 "$C/启动机器人.exe"
 wait_marker "$C/artifacts/mcp-secure-remote/packaged/win-unpacked/marker.txt"
 echo 'PASS missing/corrupt package rejected; verified fallback used'

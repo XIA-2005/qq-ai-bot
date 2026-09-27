@@ -16,11 +16,11 @@ interface Line {speaker:string;text:string;time:number}
 interface State {origin:SessionOrigin;opened:number;activity:number;lines:Line[];labels:Map<string,string>;members:string[];replies:number}
 /** In-memory continuous group participation: one @ opens a session that keeps replying to the whole room until it goes quiet. */
 export class GroupSessions {
- constructor(private idleMs:()=>number,private clock:SchedulerClock=systemClock,private limit=GROUP_LIMIT,private useNames:()=>boolean=()=>false){}
+ constructor(private idleMs:()=>number,private clock:SchedulerClock=systemClock,private limit=GROUP_LIMIT,private useNames:(group:string)=>boolean=()=>false){}
  private map=new Map<string,State>();
  /** Group card when real names are on (remembered per member so later lines without a card keep the same label), else 成员N. */
- private label(state:State,user:string,name?:string){
-  if(this.useNames()&&name){if(!state.labels.has(user))state.members.push(user);state.labels.set(user,name);return name;}
+ private label(state:State,group:string,user:string,name?:string){
+  if(this.useNames(group)&&name){if(!state.labels.has(user))state.members.push(user);state.labels.set(user,name);return name;}
   let label=state.labels.get(user);
   if(label)return label;
   if(state.members.length>=MEMBER_LIMIT)return '成员';
@@ -33,13 +33,13 @@ export class GroupSessions {
  active(group:string,now:number){const state=this.map.get(group);return !!state&&now-state.activity<this.idleMs();}
  touch(group:string,user:string,text:string,now:number,name?:string):SessionContext|undefined{
   const state=this.map.get(group);if(!state||!this.active(group,now))return undefined;
-  const context={lines:state.lines.map(l=>({speaker:l.speaker,text:l.text})),speaker:this.label(state,user,name),lastFromBot:state.lines.length>0&&state.lines[state.lines.length-1].speaker===BOT_LABEL};
+  const context={lines:state.lines.map(l=>({speaker:l.speaker,text:l.text})),speaker:this.label(state,group,user,name),lastFromBot:state.lines.length>0&&state.lines[state.lines.length-1].speaker===BOT_LABEL};
   this.push(state,context.speaker,text,now);state.activity=now;return context;
  }
  /** Lines addressed to other members are kept as context only; they never trigger a reply by themselves. */
  note(group:string,user:string,text:string,now:number,name?:string){
   const state=this.map.get(group);if(!state||!this.active(group,now))return;
-  this.push(state,this.label(state,user,name),text,now);state.activity=now;
+  this.push(state,this.label(state,group,user,name),text,now);state.activity=now;
  }
  sent(group:string,text:string,now:number){
   const state=this.map.get(group);if(!state)return;
@@ -52,7 +52,7 @@ export class GroupSessions {
   while(this.map.size>=this.limit)this.map.delete(this.map.keys().next().value!);
   const state:State={origin,opened:now,activity:now,lines:[],labels:new Map(),members:[],replies:0};
   this.map.set(group,state);
-  if(seed)for(const line of seed)this.push(state,line.fromBot?BOT_LABEL:this.label(state,line.user,line.name),line.text,now);
+  if(seed)for(const line of seed)this.push(state,line.fromBot?BOT_LABEL:this.label(state,group,line.user,line.name),line.text,now);
  }
  close(group:string){return this.map.delete(group);}
  clear(){this.map.clear();}

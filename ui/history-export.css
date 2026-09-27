@@ -1,0 +1,12 @@
+#history-export .history-export-panel{max-width:850px}
+#history-export .history-export-fields{grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;margin-top:20px}
+#history-export .history-export-fields>label{display:flex;flex-direction:column;gap:8px;min-width:0;margin:0}
+#history-export .history-export-fields>label>input,#history-export .history-export-fields>label>select{display:block;box-sizing:border-box;width:100%;min-width:0;min-height:44px;margin:0;padding:10px 12px;font:inherit;line-height:20px}
+#history-export #history-member-field[hidden]{display:none}
+#history-export .history-export-actions{justify-content:flex-start;position:static;background:transparent;padding:0;margin:22px 0 12px}
+#history-export .history-export-stats{display:flex;flex-wrap:wrap;gap:10px;margin:14px 0}
+#history-export .history-export-stats span{display:inline-block;padding:6px 11px;border:1px solid var(--line);border-radius:7px;color:var(--ink);background:#f8faf7;font-size:12px}
+#history-export .history-export-path code{overflow-wrap:anywhere;user-select:text}
+#history-export #history-status{font-weight:600;white-space:pre-line}
+#history-export #history-status.history-error{color:#9b3030}
+@media(max-width:730px){#history-export .history-export-fields{grid-template-columns:1fr}}

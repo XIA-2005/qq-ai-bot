@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
+const { verifyLaunchTarget } = require("./verify-launch-target.cjs");
 const root = path.resolve(__dirname, "..");
 
 function summary(raw) {
@@ -72,6 +73,7 @@ async function main() {
     fs.readFileSync(path.join(root, "package.json"), "utf8"),
   );
   const { relative, manifest } = manifestFor(project);
+  verifyLaunchTarget(project);
   const offline = run("ci:offline"),
     browser = run("test:browser");
   const destination = path.join(

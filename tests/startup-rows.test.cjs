@@ -41,17 +41,17 @@ test('an explicit config save re-arms a paused reply only after all conditions a
 
 // Run the real main-process wiring with fake QQ/login/store interfaces.
 // No Electron app, account profile, network, paid model, or QQ process is used.
-function boot({key='test-key',token='',config={},args=[],model,profileDir='/isolated-test-profile',allowSend=false,failSave=false,onEngineStart}={}){
+function boot({key='test-key',token='',config={},args=[],model,profileDir='/isolated-test-profile',allowSend=false,failSave=false,onEngineStart,backup}={}){
  const handlers=new Map();let startApp,window,bot,login;let saved=0,loginStarts=0;
  const stored=validate({...defaults,friends:['123456'],autoReplyConsent:true,autoReplyConsentVersion:FOLLOWUP_DISCLOSURE_VERSION,autoReplyOnLogin:false,...config});
  const electron={
   app:{setName(){},requestSingleInstanceLock:()=>true,on(){},getPath:()=>profileDir,isPackaged:false,whenReady:()=>({then:fn=>{startApp=fn}}),quit(){}},
   BrowserWindow:class {constructor(){window=this;this.webContents={send(){},mainFrame:{url:pathToFileURL(path.join(__dirname,'../ui/index.html')).href},setWindowOpenHandler(){},on(){}}}isDestroyed(){return false}loadFile(){return Promise.resolve()}},
-  ipcMain:{handle:(n,fn)=>handlers.set(n,fn)},shell:{},session:{defaultSession:{setPermissionRequestHandler(){},setPermissionCheckHandler(){}}}
+  ipcMain:{handle:(n,fn)=>handlers.set(n,fn)},dialog:{showSaveDialog:async()=>({canceled:false,filePath:path.join(profileDir,'export.qqaibak')}),showOpenDialog:async()=>({canceled:false,filePaths:[path.join(profileDir,'source.qqaibak')]})},shell:{},session:{defaultSession:{setPermissionRequestHandler(){},setPermissionCheckHandler(){}}}
  };
- const mockStore=class {constructor(){this.config=stored;this.key=key;this.token=token;this.warning=''}save(c,k,t){if(failSave)throw new Error('模拟系统凭据保存失败');this.config=c;this.key=k;this.token=t;saved++}};
+ const mockStore=class {static seal(c,k,t){return JSON.stringify({config:c,key:k,token:t})}constructor(){this.config=stored;this.key=key;this.token=token;this.warning=''}save(c,k,t){if(failSave)throw new Error('模拟系统凭据保存失败');this.config=c;this.key=k;this.token=t;saved++}};
  const memory=class {remember=true;account='123456';view={remember:true,account:'123456'};record(){};setRemember(){};forget(){}};
- const mockLogin=class {constructor(){login=this;this.state={phase:'idle',available:true}}async start(account){loginStarts++;this.account=account;this.state.phase='starting'}async stop(){} };
+ const mockLogin=class {constructor(){login=this;this.state={phase:'idle',available:true}}async start(account){loginStarts++;this.account=account;this.state.phase='starting'}async stop(){this.state.phase='idle'} };
  const mockBot=class {
   connected=false;self='';status='未连接';
   constructor(event,change,disconnect,log,ready){bot=this;Object.assign(this,{event,change,disconnect,log,ready})}
@@ -60,16 +60,17 @@ function boot({key='test-key',token='',config={},args=[],model,profileDir='/isol
   close(){this.disconnectNow()}
   sent=0;async send(){if(!allowSend)throw new Error('Test must never send QQ messages');this.sent++}
  };
- const mocks={'electron':electron,'./store':{Store:mockStore},'./login-memory':{LoginMemory:memory},'./login':{LoginManager:mockLogin},'./onebot':{OneBot:mockBot},'./model':model||{complete(){throw new Error('Test must never call a model')}}};
+ const mocks={'electron':electron,'./store':{Store:mockStore},'./login-memory':{LoginMemory:memory},'./login':{LoginManager:mockLogin},'./onebot':{OneBot:mockBot},'./model':model||{complete(){throw new Error('Test must never call a model')}},...(backup?{'./backup-archive':backup}:{})};
  if(onEngineStart){const {Engine:RealEngine}=require('../dist/engine');mocks['./engine']={Engine:class extends RealEngine {start(){onEngineStart(this.config);super.start()}}};}
  const dirname=path.join(__dirname,'../dist');
- const context={require:n=>mocks[n]||(n.startsWith('./')?require(path.join(dirname,n)):require(n)),exports:{},__dirname:dirname,process:{argv:['app',...args]},AbortController,console};
+ const context={require:n=>mocks[n]||(n.startsWith('./')?require(path.join(dirname,n)):require(n)),exports:{},__dirname:dirname,process:{argv:['app',...args]},setTimeout:()=>0,AbortController,console};
  vm.runInNewContext(fs.readFileSync(path.join(dirname,'main.js'),'utf8'),context);startApp();
  const call=async(n,x)=>{
   const result=await handlers.get(n)({sender:window.webContents,senderFrame:window.webContents.mainFrame},x);
   assert.equal(result.ok,true,result.error);return result.data;
  };
- return {bot,login,call,getSaved:()=>saved,getLoginStarts:()=>loginStarts};
+ const callRaw=(n,x)=>handlers.get(n)({sender:window.webContents,senderFrame:window.webContents.mainFrame},x);
+ return {bot,login,call,callRaw,getSaved:()=>saved,getLoginStarts:()=>loginStarts};
 }
 test('each real main-process boot auto-starts after QQ ready, even with legacy auto-off config',async()=>{
  for(let i=0;i<2;i++){
@@ -272,4 +273,93 @@ test('real main media path uses one existing model call and records its returned
  for(let i=0;i<10&&app.bot.sent===0;i++)await new Promise(r=>setImmediate(r));
  assert.equal(mediaCalls,1);assert.equal(received.at(-1).content.some(p=>p.type==='image_url'),true);assert.equal(app.bot.sent,1);
  const u=(await app.call('get-state')).usage;assert.equal(u.total.calls,1);assert.equal(u.targets['p:123456'].chat.input,'1000');
+});
+
+test('real main IPC refuses backup while QQ active, previews only counts, and import remains paused (synthetic archive seam)',async()=>{
+ const events=[],sha256='a'.repeat(64),preview={createdAt:1,fileCount:2,qqFiles:1,memoryFiles:1,totalBytes:20,hasKey:true,groupCount:1,friendCount:1,sha256};
+ const backup={cleanAbandonedRestores:()=>'',createArchive:async()=>{events.push('export');return preview},
+  inspectArchive:async(_file,password)=>{assert.equal(password,'fake-password-123');events.push('inspect');return {sha256,preview}},
+  restoreArchive:async(_dir,_file,password,hash,seal)=>{assert.equal(password,'fake-password-123');assert.equal(hash,sha256);
+   const wrapped=JSON.parse(seal(validate({...defaults,autoReplyConsent:false}),'FAKE-KEY','FAKE-LOCAL-TOKEN'));
+   assert.equal(wrapped.config.autoReplyConsent,false);events.push('restore');return {warning:''};}};
+ const app=boot({backup,profileDir:'/synthetic-never-real-user',config:{autoReplyConsent:true}});
+ // Boot's remembered test account starts the fake login; a real user must stop it before any archive action.
+ assert.match((await app.callRaw('backup-preview',{password:'fake-password-123'})).error,/停止 QQ 登录/);
+ app.login.state.phase='idle';app.bot.connectNow();
+ assert.match((await app.callRaw('backup-export',{password:'fake-password-123',confirm:true})).error,/停止 QQ 登录/);
+ app.bot.disconnectNow();
+ assert.equal((await app.callRaw('backup-restore',{password:'fake-password-123',confirm:true})).ok,false,'cannot restore without preview');
+ const inspected=await app.call('backup-preview',{password:'fake-password-123'});assert.deepEqual(Object.keys(inspected),['selected','preview']);
+ assert.equal(inspected.preview.qqFiles,1);assert.ok(!JSON.stringify(inspected).includes('FAKE-KEY'));
+ assert.equal((await app.callRaw('backup-restore',{password:'fake-password-123',confirm:false})).ok,false);
+ const result=await app.call('backup-restore',{password:'fake-password-123',confirm:true});assert.equal(result.paused,true);
+ assert.equal((await app.call('get-state')).running,false);
+ assert.deepEqual(events,['inspect','restore']);
+});
+
+test('revoking a group ID-mapping opt-in discards the old local QQ/card file',async()=>{
+ const os=require('node:os');const {defaultProfile}=require('../dist/profiles');const {GroupMemory}=require('../dist/persona-layer');
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'qqbot-revoke-'));
+ try{
+  const profile={...defaultProfile,nightlyMemory:true,shareMemberIds:true};
+  const app=boot({profileDir:dir,config:{groups:['345678'],memoryAutoDistill:true,profiles:{'g:345678':profile}}});
+  new GroupMemory(dir).rememberMembers('345678',[{user:'123456',name:'昵称',fromBot:false}],Date.now());
+  const file=path.join(dir,'memory-ids','345678.json');assert.ok(fs.existsSync(file));
+  await app.call('save-target-profile',{kind:'group',id:'345678',profile:{...profile,shareMemberIds:false}});
+  assert.equal(fs.existsSync(file),false);
+ }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+
+test('per-photo billing and upload needs its own desktop confirmation; history rollback must reconfirm',async t=>{
+ const app=isolatedApi(t,{config:{groups:['345678'],proactiveEnabled:true,proactiveGroups:['345678']}});
+ const original=(await app.call('get-config')).config;
+ const requested={...original,visionEnabled:true,proactiveImageEvery:true};
+ await assert.rejects(app.call('save-config',{config:requested,key:'',confirmVision:true}),/每张.*图片|逐张/);
+ assert.equal((await app.call('get-config')).config.proactiveImageEvery,false);
+ await assert.rejects(app.call('save-config',{config:requested,key:'',confirmProactiveImages:true}),/白名单图片/);
+ await app.call('save-config',{config:requested,key:'',confirmVision:true,confirmProactiveImages:true});
+ assert.equal((await app.call('get-config')).config.proactiveImageEvery,true);
+ assert.equal((await app.callRaw('save-config',{config:{...requested,visionEnabled:false},key:''})).ok,false);
+ assert.equal((await app.call('get-config')).config.visionEnabled,true);
+ await app.call('save-config',{config:{...requested,proactiveImageEvery:false},key:''});
+ const list=await app.call('config-history');const imageEntry=await app.call('config-history-preview',{index:list.items[0].index});
+ assert.equal(imageEntry.imageEvery,true);
+ assert.match((await app.callRaw('config-history-rollback',{index:imageEntry.index,hash:imageEntry.hash,confirm:true})).error,/逐张主动看图/);
+ await app.call('config-history-rollback',{index:imageEntry.index,hash:imageEntry.hash,confirm:true,confirmProactiveImages:true});
+ assert.equal((await app.call('get-config')).config.proactiveImageEvery,true);
+ assert.equal((await app.call('get-state')).running,false);
+});
+
+test('two-stage chat requires its own desktop consent, history preview and renewed rollback consent',async t=>{
+ const app=isolatedApi(t,{config:{groups:['345678']}}),original=(await app.call('get-config')).config;
+ assert.equal(original.chatAnalysisEnabled,false);
+ const enabled={...original,chatAnalysisEnabled:true};
+ await assert.rejects(app.call('save-config',{config:enabled,key:''}),/先独立分析/);
+ assert.equal(app.getSaved(),0);assert.equal((await app.call('get-config')).config.chatAnalysisEnabled,false);
+ await app.call('save-config',{config:enabled,key:'',confirmChatAnalysis:true});
+ assert.equal((await app.call('get-config')).config.chatAnalysisEnabled,true);
+ await app.call('save-config',{config:{...enabled,chatAnalysisEnabled:false},key:''});
+ assert.equal((await app.call('get-config')).config.chatAnalysisEnabled,false);
+ const list=await app.call('config-history');
+ const entry=await app.call('config-history-preview',{index:list.items[0].index});
+ assert.equal(entry.chatAnalysis,true);
+ assert.match((await app.callRaw('config-history-rollback',{index:entry.index,hash:entry.hash,confirm:true})).error,/每次聊天先付费分析/);
+ assert.equal((await app.call('get-config')).config.chatAnalysisEnabled,false);
+ await app.call('config-history-rollback',{index:entry.index,hash:entry.hash,confirm:true,confirmChatAnalysis:true});
+ assert.equal((await app.call('get-config')).config.chatAnalysisEnabled,true);
+ assert.equal((await app.call('get-state')).running,false);
+});
+
+test('opted-in two-stage chat records both paid requests even when the final decision stays silent',async t=>{
+ let requests=0;
+ const note=JSON.stringify({topic:'聊天',participants:'朋友',continuity:'上一条',intent:'判断要不要回应'});
+ const app=isolatedApi(t,{config:{mergeWindowMs:0,chatAnalysisEnabled:true},model:{completeWithUsage:async(_c,_key,m)=>{
+  requests++;
+  return {text:m.some(x=>x.role==='system'&&String(x.content).includes('语境整理器'))?note:'{"reply":false}',elapsedMs:10,usage:costUsage};
+ }}});t.after(()=>app.call('pause'));
+ app.bot.connectNow();app.bot.event({post_type:'message',message_type:'private',sub_type:'friend',user_id:'123456',self_id:'999999',message_id:61,time:Date.now()/1000,message:[{type:'text',data:{text:'离线虚构消息'}}]});
+ for(let i=0;i<20&&requests<2;i++)await new Promise(r=>setImmediate(r));
+ const usage=(await app.call('get-state')).usage;
+ assert.equal(requests,2);assert.equal(usage.total.calls,2);assert.equal(usage.targets['p:123456'].chat.calls,2);
+ assert.equal(app.bot.sent,0,'the silent result is never delivered to QQ');
 });

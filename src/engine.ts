@@ -14,6 +14,8 @@ import {LoopGuard} from './loop-guard';
 import {shapeReply} from './shape';
 import type {StatePersister,EngineState} from './persist';
 import {decorateMessages,Decoration} from './persona-layer';
+import {ANALYSIS_MAX_TOKENS,analysisMessages,parseAnalysis,withAnalysisNote} from './chat-analysis';
+import {ChatCallLimit} from './chat-call-limit';
 export interface EngineDeps {prepareMedia?:(refs:MediaReference[],vision:boolean,signal:AbortSignal)=>Promise<PreparedMedia>;/** Load a quoted message that already left the room buffer (OneBot get_msg). */fetchMessage?:(id:string,group:string,signal:AbortSignal)=>Promise<{user:string;text:string;media:MediaReference[]}|null>;generate:(messages:ChatMessage[],signal:AbortSignal,config?:Config,job?:Accepted)=>Promise<string>;/** May resolve to the QQ ids of the bubbles it sent, so a later quote of one can be matched. */send:(job:Accepted,text:string,signal:AbortSignal)=>Promise<void|unknown[]>;log:(message:string)=>void;change:()=>void;react?:(job:Accepted,emojiId:string)=>Promise<boolean>;/** Something the owner should hear about now (budget, loops, repeated failures); the app forwards it to the admin. */notify?:(kind:string,text:string)=>void;/** Room context + per-user memory survive restarts through this (debounced) snapshot. */persist?:StatePersister;/** Persona layer: group memory, sticker keywords and own-voice samples for this job (the style tail comes from config). */decor?:(job:Accepted)=>Decoration|undefined;/** Sees every raw group event so the sticker book can learn what the room uses. */learn?:(event:any,now:number)=>void}
 /** In QQ a picture is usually its own message and the "@bot 看看" follows it; a direct @ without images borrows the room's pictures from this long ago. */
 export const RECENT_MEDIA_WINDOW_MS=300_000;
@@ -27,12 +29,13 @@ export class Engine {
  readonly context=new GroupContext();
  /** QQ nickname of the logged-in account; set by the app so being called by name counts. */
  selfName='';
- private proactive=new Proactive(()=>engagementTuning(this.config.engagement),()=>this.config.useRealNames!==false);
+ private proactive=new Proactive(()=>engagementTuning(this.config.engagement),group=>resolveTarget(this.config,'group',group).useRealNames);
  private rooms:GroupSessions;
  /** Other-bot throttle, ping-pong breaker and manual mutes. */
  readonly guard=new LoopGuard(()=>this.config.otherBots??[]);
  /** Last time a self-joining group was allowed to look at an ambient picture. */
  private imageAt=new Map<string,number>();
+ private contextWarned=new Map<string,number>();
  private failStreak=0;
  private sessionTimer:unknown;
  private seen=new Map<string,number>();
@@ -42,8 +45,10 @@ export class Engine {
  private history=new Map<string,ChatMessage[]>();
  private generation=0;
  private scheduler:ConversationScheduler;
+ private chatCallLimit:ChatCallLimit;
  constructor(public config:Config,private deps:EngineDeps,private clock:SchedulerClock=systemClock){
-  this.rooms=new GroupSessions(()=>this.config.groupSessionIdleMinutes*60_000,clock,undefined,()=>this.config.useRealNames!==false);
+  this.chatCallLimit=new ChatCallLimit(clock);
+  this.rooms=new GroupSessions(()=>this.config.groupSessionIdleMinutes*60_000,clock,undefined,group=>resolveTarget(this.config,'group',group).useRealNames);
   const saved=deps.persist?.load();
   if(saved){
    const now=clock.now();
@@ -79,7 +84,7 @@ export class Engine {
  /** Stop replying. Judgment state (proactive counters, open rooms, follow-up windows) is dropped; what the rooms said and the per-user memory are kept, so a config save or a restart does not make the bot forget the thread. */
  pause(){this.running=false;this.generation++;this.proactive.reset();this.rooms.clear();this.followups.clear();this.recorded.clear();this.clearSessionTimer();this.scheduler.stop();}
  /** Stop and forget everything, including the persisted snapshot. */
- clear(){this.pause();this.context.clear();this.history.clear();this.selfMessages.clear();this.guard.clear();this.scheduler.clearCooldown();this.persistSoon();this.deps.persist?.flush();this.deps.change();}
+ clear(){this.pause();this.context.clear();this.contextWarned.clear();this.history.clear();this.selfMessages.clear();this.guard.clear();this.scheduler.clearCooldown();this.persistSoon();this.deps.persist?.flush();this.deps.change();}
  private snapshot():EngineState{const h:Record<string,unknown[]>={};for(const [k,v] of this.history)h[k]=v;return {version:1,savedAt:this.clock.now(),context:this.context.export(),history:h};}
  private persistSoon(){this.deps.persist?.save(()=>this.snapshot());}
  updateConfig(next:Config){
@@ -103,7 +108,7 @@ export class Engine {
  clearTarget(kind:TargetKind,id:string){
   if(kind==='group'){this.proactive.directed(id,this.clock.now());this.rooms.close(id);}
   if(kind==='group')this.followups.close(id);
-  if(kind==='group')this.context.clearGroup(id);
+  if(kind==='group'){this.context.clearGroup(id);this.contextWarned.delete(id);}
   this.scheduler.cancelWhere(j=>kind==='group'?j.group===id:!j.group&&j.user===id);
   for(const key of this.history.keys())if(kind==='group'?key.startsWith(`g:${id}:`):key===`p:${id}`)this.history.delete(key);
  }
@@ -180,7 +185,9 @@ export class Engine {
   this.seen.set(accepted.messageId,now);if(this.seen.size>10000)this.seen.delete(this.seen.keys().next().value!);
   if(context){this.rooms.note(context.group!,context.user,context.text,now,context.senderName);return;}
   if(ambient){
-   const candidate=this.proactive.observe(job!,now);if(!candidate)return;job=candidate;
+   // Per-photo judgment needs a separate owner opt-in, group proactive scope and image upload consent.
+   const photo=this.config.proactiveImageEvery===true&&this.config.visionEnabled===true&&!!job!.media?.some(ref=>ref.kind==='image');
+   const candidate=this.proactive.observe(job!,now,photo);if(!candidate)return;job=candidate;
   }else if(job!.group){
    const room=job!.group,sender=job!.user;
    if(job!.session){
@@ -234,7 +241,11 @@ export class Engine {
  private async reply(job:Accepted,signal:AbortSignal){
   const epoch=this.generation;
   const current=()=>this.running&&epoch===this.generation&&!signal.aborted;
-  if(!current())return;
+  // A queued second call must not revive an expired proactive, follow-up or open-room judgment.
+  const candidateValid=()=>current()&&(!job.proactive||this.proactive.allowed(job,this.clock.now(),this.config))&&
+   (!job.session||this.rooms.active(job.group||'',this.clock.now()))&&
+   (!job.followup||this.followups.open(job.group||'',this.clock.now()));
+  if(!candidateValid())return;
   const profile=resolveTarget(this.config,job.group?'group':'friend',job.group||job.user);
   if(!profile.enabled)return;
   const inRoom=!job.proactive&&!!job.group&&profile.session;
@@ -247,26 +258,37 @@ export class Engine {
   // up to the model call unless QQ has to be asked for a message that already left the buffer.
   const quotedId=job.group&&job.quotedId&&!job.proactive?job.group+':'+job.quotedId:'';
   let quoted=quotedId?this.context.find(job.group!,quotedId,now):undefined;
-  if(quotedId&&!quoted&&this.deps.fetchMessage){quoted=await this.fetchQuoted(job.group!,job.quotedId!,quotedId,now,signal);if(!current())return;}
+  if(quotedId&&!quoted&&this.deps.fetchMessage){quoted=await this.fetchQuoted(job.group!,job.quotedId!,quotedId,now,signal);if(!candidateValid())return;}
   // Follow-up judgments describe the room by member; the bot's own lines are passed separately.
-  const names=this.config.useRealNames!==false;
+  const names=profile.useRealNames;
   const roomLines=room.filter(l=>!l.fromBot).slice(-12).map(l=>({user:l.user,text:l.text,name:l.name}));
   // Per-user memory holds only the exchange itself, never the room snapshot or judgment prompts of the moment.
   const exchange:ChatMessage[]=[...(profile.historyTurns>0?(this.history.get(job.key)||[]).slice(-profile.historyTurns*2):[]),{role:'user',content:job.text}];
+  const roomContext=job.group&&!job.proactive&&!job.followup&&!inRoom?contextMessages(room,{asker:job.user,quoted,names,clipped:this.context.wasClipped(job.group)}):[];
+  if(job.group&&roomContext[0]&&String(roomContext[0].content).includes('【上下文已截断】')&&now-(this.contextWarned.get(job.group)??-Infinity)>30*60_000){
+   this.contextWarned.set(job.group,now);this.deps.log(`群 ${job.group} 的模型上下文超过 100 条或 8,000 字，已优先保留近期与引用消息，其余截断`);
+  }
   const messages:ChatMessage[]=job.proactive?proactiveMessages(job,profile.prompt,this.config.engagement):job.followup?followupMessages(job,profile.prompt,this.followups.lines(job.group||''),roomLines.length?roomLines:this.proactive.recent(job.group||'',now),names):inRoom?sessionMessages(job,profile.prompt,job.sessionContext,!job.session,this.config.engagement,names):[
    {role:'system',content:profile.prompt},
-   ...(job.group?contextMessages(room,{asker:job.user,quoted,names}):[]),
+   ...roomContext,
    ...exchange
   ];
-  this.decorate(messages,job);
+  this.decorate(messages,job,profile.styleTail);
   try{
    let requestMessages=messages;
    let mediaRefs=job.media,mediaOmitted=job.mediaOmitted??0,origin:MediaOrigin='message';
    if(job.proactive&&job.group){
     // A self-joining group may glance at a member's picture now and then, like a person scrolling past.
-    const every=(this.config.proactiveImageMinutes??0)*60_000,last=this.imageAt.get(job.group)??-Infinity;
-    if(mediaRefs?.length&&every>0&&now-last>=every){this.imageAt.set(job.group,now);origin='ambient';mediaRefs=mediaRefs.slice(0,1);mediaOmitted=0;this.deps.log('主动接话：顺带看一眼群友刚发的图');}
-    else mediaRefs=undefined;
+    if(job.imageComment){
+     if(!this.config.proactiveImageEvery||!this.config.visionEnabled)return;
+     mediaRefs=mediaRefs?.filter(ref=>ref.kind==='image').slice(0,1);
+     if(!mediaRefs?.length)return;
+     origin='ambient';mediaOmitted=0;
+    }else{
+     const every=(this.config.proactiveImageMinutes??0)*60_000,last=this.imageAt.get(job.group)??-Infinity;
+     if(mediaRefs?.length&&every>0&&now-last>=every){this.imageAt.set(job.group,now);origin='ambient';mediaRefs=mediaRefs.slice(0,1);mediaOmitted=0;this.deps.log('主动接话：顺带看一眼群友刚发的图');}
+     else mediaRefs=undefined;
+    }
    }
    if(job.group&&!job.proactive&&(!mediaRefs||!mediaRefs.length)){
     // The quoted message's own pictures are exactly what "这个" means; otherwise a direct @ may be
@@ -280,17 +302,40 @@ export class Engine {
    }
    if(mediaRefs?.length){
     const media:PreparedMedia=this.deps.prepareMedia?await this.deps.prepareMedia(mediaRefs,this.config.visionEnabled===true,signal):{parts:[],images:0,ocr:0,failed:mediaRefs.length};
-    if(!current())return;
-    if(job.proactive&&!this.proactive.allowed(job,this.clock.now(),this.config))return;
+    if(!candidateValid())return;
+    if(job.imageComment&&media.images<1){this.deps.log('主动看图：图片无法安全读取，本次不调用付费模型');return;}
     requestMessages=withPreparedMedia(messages,media,mediaOmitted,origin);
     const detail=describeMediaIssues(media);
     this.deps.log(`图片处理：${media.images} 张提供视觉输入，${media.ocr} 张取得文字，${media.failed} 张不可识别；原图识别${this.config.visionEnabled?'开启':'关闭'}${media.previews?`；${media.previews} 张使用同一表情静态预览`:''}${detail?'；'+detail:''}（不记录原图或地址）`);
    }
+   // The preparatory call reads the same bounded text context but never resends raw image bytes.
+   // Each call goes through the same tracked budget path; a failed analysis falls back to the
+   // original single-reply prompt, except on cancellation or when the candidate went stale.
+   if(!candidateValid())return;
+   if(this.config.chatAnalysisEnabled){
+    try{
+     const analysisWait=this.chatCallLimit.acquire(this.config.perMinute,signal);
+     if(analysisWait)await analysisWait;
+     if(!candidateValid())return;
+     const raw=await this.deps.generate(analysisMessages(messages),signal,{...this.config,maxTokens:Math.min(profile.maxTokens,ANALYSIS_MAX_TOKENS)},job);
+     if(!candidateValid())return;
+     const note=parseAnalysis(raw);
+     if(note)requestMessages=withAnalysisNote(requestMessages,note);
+     else this.deps.log('聊天前置分析未取得有效摘要，按原有单次请求继续（不记录聊天正文）');
+    }catch{
+     if(!candidateValid())return;
+     this.deps.log('聊天前置分析未完成，按原有单次请求继续；若费用护栏已阻断，回复仍会被阻断');
+    }
+   }
+   if(!candidateValid())return;
+   const replyWait=this.chatCallLimit.acquire(this.config.perMinute,signal);
+   if(replyWait)await replyWait;
+   if(!candidateValid())return;
    let answer=await this.deps.generate(requestMessages,signal,{...this.config,maxTokens:profile.maxTokens},job);
-   if(!current())return;
+   if(!candidateValid())return;
    if(job.proactive||job.session||job.followup){
     const text=parseProactive(answer);
-    if(!text||(job.proactive&&!this.proactive.allowed(job,this.clock.now(),this.config))){
+    if(!text){
     if(job.followup&&job.group)this.followups.miss(job.group);
      this.deps.log(job.proactive?'主动接话：保持沉默或上下文已更新':job.followup?'判断这条不是在跟自己说话，保持沉默':'持续参与：这次判断选择保持沉默');return;
     }
@@ -299,19 +344,18 @@ export class Engine {
    // An unprompted "哈哈" adds nothing: react like a person would, or stay quiet.
    if((job.proactive||job.session||job.followup)&&isLowValueFiller(answer)){
     const reacted=job.rawMessageId?await this.deps.react?.(job,reactionFor(answer)):false;
-    if(job.proactive)this.proactive.reserve(job,this.clock.now());
     this.deps.log(reacted?'内容没营养，改为贴一个表情回应':'内容没营养，本次保持沉默');
     return;
    }
    // The lane remains held until send completes. Uncertain sends are never retried.
     const outgoing=unwrapReply(answer);
     if(outgoing===null){this.deps.log('模型输出为内部决策结构，按沉默处理');return;}
-    answer=outgoing;
+    answer=job.imageComment?outgoing.replace(/\[(?:表情|表情包)[:：][^\]]{1,20}\]/g,'').trim():outgoing;
    // Outgoing shape guard: bubble count / length / trailing full stop / one face per bubble.
-   answer=shapeReply(answer,{maxLines:this.config.maxLines||0,maxLineChars:this.config.maxLineChars||0,stripPeriod:this.config.stripPeriod===true,maxFaces:1});
+   answer=shapeReply(answer,{maxLines:job.imageComment?1:profile.maxLines,maxLineChars:job.imageComment?Math.min(profile.maxLineChars||30,30):profile.maxLineChars,stripPeriod:profile.stripPeriod,maxFaces:1});
    if(!answer.trim()){this.deps.log('整形后没有可发送的内容，本次沉默');return;}
    if(job.group&&!job.proactive&&!job.session)job={...job,address:this.addressMode(job,this.clock.now())};
-   const sent=await this.deps.send(job,answer,signal);
+   const sent=await this.deps.send({...job,deliveryShaped:true},answer,signal);
    if(!current())return;
    const delivered=this.clock.now();
    // The transport does not echo the bot's own messages, so the room buffer learns the reply here;
@@ -361,10 +405,10 @@ export class Engine {
   return (job.rawMessageIds?.length||job.rawMessageId)?'quote':'at';
  }
  /** Persona layer: group memory + sticker keywords + own-voice samples after the persona, style tail before the last user turn. */
- private decorate(messages:ChatMessage[],job:Accepted){
+ private decorate(messages:ChatMessage[],job:Accepted,styleTail:string){
   let d:Decoration|undefined;
   try{d=this.deps.decor?.(job);}catch(err){this.deps.log('人设层出错，已忽略：'+(err instanceof Error?err.message:'未知错误'));}
-  const tail=(this.config.styleTail||'').trim();
+  const tail=styleTail.trim();
   if(!d&&!tail)return;
   decorateMessages(messages,{...(d||{}),tail:tail||undefined});
  }

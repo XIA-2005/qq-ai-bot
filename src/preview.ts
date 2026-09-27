@@ -1,6 +1,8 @@
 import {Config,ChatMessage} from './config';
 import {TargetKind,resolveTarget,effectiveSignature} from './profiles';
 import {ModelResult} from './model';
+import {decorateMessages} from './persona-layer';
+import {shapeReply} from './shape';
 export class PreviewSession {
  private target?:{kind:TargetKind;id:string};
  private transcript:ChatMessage[]=[];
@@ -39,11 +41,14 @@ export class PreviewSession {
   const profile=this.profile,epoch=this.epoch,controller=this.controller=new AbortController();
   const history=profile.historyTurns>0?this.transcript.slice(-profile.historyTurns*2):[];
   const user:ChatMessage={role:'user',content:raw.trim()};
+  const messages:ChatMessage[]=[{role:'system',content:profile.prompt},...history,user];
+  if(profile.styleTail)decorateMessages(messages,{tail:profile.styleTail});
   this.change();
   try{
-   const result=await this.generate({...c,maxTokens:profile.maxTokens},key,[{role:'system',content:profile.prompt},...history,user],controller.signal,{...this.target});
+   const result=await this.generate({...c,maxTokens:profile.maxTokens},key,messages,controller.signal,{...this.target});
    if(controller.signal.aborted||this.epoch!==epoch)throw new Error('试聊已取消或配置已改变，旧结果已丢弃');
-   this.transcript=[...this.transcript,user,{role:'assistant' as const,content:result.text}].slice(-24);
+   const answer=shapeReply(result.text,{maxLines:profile.maxLines,maxLineChars:profile.maxLineChars,stripPeriod:profile.stripPeriod,maxFaces:1});
+   this.transcript=[...this.transcript,user,{role:'assistant' as const,content:answer}].slice(-24);
    this.last={elapsedMs:result.elapsedMs,usage:result.usage};this.controller=undefined;return this.view;
   }finally{if(this.controller===controller)this.controller=undefined;this.change();}
  }

@@ -22,23 +22,32 @@ class Launcher {
   string root = baseDir.FullName;
   if (String.Equals(baseDir.Name, "scripts", StringComparison.OrdinalIgnoreCase))
    root = baseDir.Parent.FullName;
-  // Offline preflight: never spawns QQ or displays a dialog. Useful for CI and incomplete packages.
+  // Offline preflight: never spawns QQ or displays a dialog. Verify the selected
+  // version, not merely that some older fallback is launchable.
   bool checkOnly = args.Length == 1 && args[0] == "--check-launch-target";
-  if (args.Length != 0 && !checkOnly) return 2;
+  const string checkVersionPrefix = "--check-launch-version=";
+  string expectedVersion = args.Length == 1 && args[0].StartsWith(checkVersionPrefix, StringComparison.Ordinal)
+   ? args[0].Substring(checkVersionPrefix.Length) : null;
+  bool checkVersion = expectedVersion != null && Regex.IsMatch(expectedVersion, @"^\d+\.\d+\.\d+$");
+  if (args.Length != 0 && !checkOnly && !checkVersion) return 2;
   try {
    string exe = FindNewest(root);
    if (exe == null) {
-    if (checkOnly) return 2;
+    if (checkOnly || checkVersion) return 2;
     throw new FileNotFoundException("未找到通过版本与 SHA256 校验的完整打包目录。请运行 npm run pack:win；旧包须先生成 launch-manifest.json。");
    }
    if (checkOnly) return 0;
+   if (checkVersion) {
+    string expected = Path.GetFullPath(Path.Combine(root, "release-v" + expectedVersion, "win-unpacked", "QQ AI Bot.exe"));
+    return String.Equals(Path.GetFullPath(exe), expected, StringComparison.OrdinalIgnoreCase) ? 0 : 2;
+   }
    var start = new ProcessStartInfo(exe) { WorkingDirectory = Path.GetDirectoryName(exe), UseShellExecute = false };
    start.EnvironmentVariables.Remove("ELECTRON_RUN_AS_NODE");
    start.EnvironmentVariables.Remove("NODE_OPTIONS");
    Process.Start(start);
    return 0;
   } catch (Exception ex) {
-   if (checkOnly) return 2;
+   if (checkOnly || checkVersion) return 2;
    MessageBox.Show(ex.Message + "\n\n目录：" + root, "QQ AI Bot 启动失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
    return 1;
   }

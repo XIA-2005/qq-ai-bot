@@ -13,6 +13,9 @@ test('sticker book learns market stickers from room traffic and sends them back 
   assert.equal(book.learn({type:'image',data:{file:'x.jpg',summary:'[动画表情]'}},3000),false,'a plain animated image has no keyword');
   assert.equal(book.learn({type:'mface',data:{emoji_id:'def456',emoji_package_id:'1',key:'k2',summary:'[捂脸哭]'}},4000),true);
   assert.deepEqual(book.names(),['汪汪','捂脸哭']);
+  assert.equal(book.find('汪汪'),null,'unreviewed names must not be treated as emotions');
+  book.setMood('abc123','joy');book.setMood('def456','speechless');
+  assert.deepEqual(book.tagged(),[{name:'汪汪',mood:'开心'},{name:'捂脸哭',mood:'无语'}]);
   assert.equal(book.find('汪汪').id,'abc123');assert.equal(book.find('捂脸').id,'def456');assert.equal(book.find('不存在'),null);
   const seg=StickerBook.segment(book.find('汪汪'));
   assert.equal(seg.type,'mface');assert.equal(seg.data.emoji_id,'abc123');assert.equal(seg.data.summary,'[汪汪]');
@@ -59,4 +62,30 @@ test('decorateMessages puts knowledge after the persona and the style tail right
  assert.ok(msgs[5].content.startsWith('风格提醒'));assert.equal(msgs[6].role,'user');
  const plain=[{role:'system',content:'p'},{role:'user',content:'hi'}];
  decorateMessages(plain,{});assert.equal(plain.length,2,'nothing to add, nothing changed');
+});
+
+test('legacy sticker files load as unreviewed, and a human change persists without renaming a sticker',()=>{
+ const dir=tmp();try{
+  fs.writeFileSync(path.join(dir,'stickers.json'),JSON.stringify({version:1,items:[{id:'a',pkg:'p',key:'k',name:'哭',seen:3,lastSeen:1}]}));
+  const b=new StickerBook(dir);assert.equal(b.list()[0].mood,'unreviewed');assert.equal(b.find('哭'),null);
+  assert.throws(()=>b.setMood('a','wrong'),/情绪分类/);b.setMood('a','laugh');
+  assert.equal(new StickerBook(dir).list()[0].mood,'laugh');assert.equal(new StickerBook(dir).find('哭').id,'a');
+ }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+test('member ID mapping requires an explicit caller; regular prompts and stored notes omit QQ numbers',()=>{
+ const dir=tmp();try{
+  const memory=new GroupMemory(dir);
+  const lines=[{user:'123456',name:'小A',fromBot:false},{user:'234567',name:'小B',fromBot:false}];
+  const members=memory.rememberMembers('345678',lines,1_700_000_000_000);
+  assert.deepEqual(members,[{qq:'123456',name:'小A'},{qq:'234567',name:'小B'}]);
+  assert.equal(memory.rememberMembers('345678',[{user:'123456',fromBot:false}],1_700_000_001_000)[0].name,'小A');
+  assert.ok(fs.existsSync(path.join(dir,'memory-ids','345678.json')));
+  const plain=GroupMemory.distillMessages('看过 123456',[{speaker:'小A',text:'大家好'}]);
+  assert.ok(!JSON.stringify(plain).includes('123456'));
+  const night=GroupMemory.distillMessages('',[{speaker:'小A',text:'大家好'}],members);
+  assert.ok(JSON.stringify(night).includes('123456'));
+  const chat=[{role:'system',content:'p'},{role:'user',content:'hi'}];decorateMessages(chat,{memory:'小A 是 123456'});
+  assert.ok(!JSON.stringify(chat).includes('123456'));
+  memory.clearMemberIds('345678');assert.equal(fs.existsSync(path.join(dir,'memory-ids','345678.json')),false);
+ }finally{fs.rmSync(dir,{recursive:true,force:true});}
 });

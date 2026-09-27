@@ -1,7 +1,7 @@
 'use strict';
 (function (root) {
  const LIMIT=200;
- const defaults={remark:'',enabled:true,prompt:null,replyLength:'inherit',historyTurns:null,groupMode:'inherit'};
+ const defaults={remark:'',enabled:true,prompt:null,replyLength:'inherit',historyTurns:null,groupMode:'inherit',useRealNames:null,nightlyMemory:null,shareMemberIds:false,styleTail:null,maxLines:null,maxLineChars:null,stripPeriod:null};
  function cleanDigits(str){return String(str??'').replace(/[\uFF10-\uFF19]/g,c=>String.fromCharCode(c.charCodeAt(0)-0xFEE0));}
  function normalizeRows(values,label='白名单'){
   if(!Array.isArray(values)||values.length>LIMIT)throw new Error(`${label}最多 ${LIMIT} 行`);

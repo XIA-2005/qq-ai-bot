@@ -1,7 +1,7 @@
 {
   "name": "qq-ai-bot",
   "productName": "QQ AI Bot",
-  "version": "0.9.4",
+  "version": "0.9.6",
   "private": true,
   "description": "Local QQ AI assistant with DeepSeek",
   "author": "QQ AI Bot contributors",
@@ -12,16 +12,16 @@
     "test": "npm run build && node --test tests/*.test.cjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "check:browser-assets": "node scripts/check-browser-assets.cjs",
-    "lint:staged": "eslint --config eslint.config.cjs tests/p2-*.test.cjs tests/p2-*.browser.cjs scripts/check-browser-assets.cjs scripts/write-release-report.cjs",
-    "format:check:staged": "prettier --end-of-line auto --check src/budget.ts src/idempotency.ts src/tracked-model.ts src/ipc-input.ts tests/p2-*.test.cjs tests/p2-*.browser.cjs scripts/check-browser-assets.cjs scripts/write-release-report.cjs eslint.config.cjs ui/budget.css docs/current-release.md .github/workflows/offline-ci.yml",
+    "lint:staged": "eslint --config eslint.config.cjs tests/p2-*.test.cjs tests/p2-*.browser.cjs scripts/check-browser-assets.cjs scripts/write-release-report.cjs scripts/verify-launch-target.cjs",
+    "format:check:staged": "prettier --end-of-line auto --check src/budget.ts src/idempotency.ts src/tracked-model.ts src/ipc-input.ts tests/p2-*.test.cjs tests/p2-*.browser.cjs scripts/check-browser-assets.cjs scripts/write-release-report.cjs scripts/verify-launch-target.cjs eslint.config.cjs ui/budget.css docs/current-release.md .github/workflows/offline-ci.yml",
     "ci:offline": "npm run typecheck && npm run check:browser-assets && npm run lint:staged && npm run format:check:staged && npm test",
     "test:browser": "npm run build && node --test tests/*.browser.cjs",
     "manifest:legacy": "node scripts/write-launcher-manifest.cjs artifacts/mcp-secure-remote/packaged/win-unpacked",
     "preflight:runtime": "node scripts/preflight-runtime.cjs",
-    "pack:win": "npm run preflight:runtime && npm run build && electron-builder --win dir --x64 --config.electronDist=node_modules/electron/dist && node scripts/write-launcher-manifest.cjs && node scripts/write-release-report.cjs",
+    "pack:win": "npm run preflight:runtime && npm run build && electron-builder --win dir --x64 --config.electronDist=node_modules/electron/dist && node scripts/write-launcher-manifest.cjs && node scripts/verify-launch-target.cjs && node scripts/write-release-report.cjs",
     "pack:external-win": "npm run build && node scripts/build-external-runtime.cjs",
     "release:report": "node scripts/write-release-report.cjs",
-    "dist:win": "npm run preflight:runtime && npm run build && electron-builder --win nsis --x64 --config.electronDist=node_modules/electron/dist"
+    "dist:win": "npm run preflight:runtime && npm run build && electron-builder --win nsis --x64 --config.electronDist=node_modules/electron/dist && node scripts/write-launcher-manifest.cjs && node scripts/verify-launch-target.cjs && node scripts/write-release-report.cjs"
   },
   "dependencies": {
     "qrcode": "^1.5.4",
@@ -43,12 +43,13 @@
     "appId": "com.example.qqaibot",
     "productName": "QQ AI Bot",
     "directories": {
-      "output": "release-v0.9.4"
+      "output": "release-v0.9.6"
     },
     "files": [
       "dist/**/*.js",
       "ui/**/*",
       "mobile/**/*",
+      "tools/export-group-history.cjs",
       "package.json"
     ],
     "asar": true,

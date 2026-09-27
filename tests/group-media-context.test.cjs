@@ -92,7 +92,7 @@ test('per-user memory keeps the exchange only, never the room snapshot',async()=
  assert.ok(!JSON.stringify(m.slice(-3)).includes('闲聊一句'));
 });
 
-test('GroupContext trims long lines, drops bot echoes and only serves lines inside the window',()=>{
+test('GroupContext trims long lines, drops bot echoes and preserves the last 30 even past 24 hours',()=>{
  const ctx=new GroupContext();const t0=1_000_000;
  ctx.record(group,{id:'a',user:alice,text:'长'.repeat(CONTEXT_TEXT_LIMIT+50),time:t0,fromBot:false,media:[]},t0);
  assert.equal(ctx.recent(group,t0)[0].text.length,CONTEXT_TEXT_LIMIT);
@@ -103,7 +103,8 @@ test('GroupContext trims long lines, drops bot echoes and only serves lines insi
  ctx.record(group,{id:'bot:2',user:self,text:'第一句',time:t0+200_000,fromBot:true,media:[]},t0+200_000);
  assert.equal(ctx.recent(group,t0+200_000).filter(l=>l.fromBot).length,2,'the same words minutes later are a new line');
  assert.equal(ctx.find(group,'a',t0+1000).id,'a');
- assert.equal(ctx.find(group,'a',t0+CONTEXT_WINDOW_MS+1),undefined);
+ assert.equal(ctx.find(group,'a',t0+CONTEXT_WINDOW_MS+1).id,'a');
+ assert.deepEqual(ctx.recent(group,t0+CONTEXT_WINDOW_MS+1,60_000),[],'explicit short windows exclude old lines');
 });
 
 test('contextMessages prepends a quoted line that is no longer buffered',()=>{
@@ -156,4 +157,35 @@ test('OneBot.fetchMessage only returns a message from the requested group',async
  assert.equal(await bot.fetchMessage('3','345678'),null);
  assert.equal(await bot.fetchMessage('abc','345678'),null);
  assert.deepEqual(calls.map(c=>c[1]),[1,2,3],'malformed ids are never sent to QQ');
+});
+
+test('context takes the larger of 30 messages and 24h, caps at 100/8000, and marks truncation without losing a quote',()=>{
+ const {CONTEXT_LINE_LIMIT,CONTEXT_CHARS_LIMIT}=require('../dist/group-context');
+ const ctx=new GroupContext(),now=2*CONTEXT_WINDOW_MS;
+ for(let i=0;i<18;i++)ctx.record(group,{id:'old'+i,user:alice,text:'older',time:now-CONTEXT_WINDOW_MS-1000,fromBot:false,media:[]},now);
+ assert.equal(ctx.recent(group,now).length,18,'quiet room keeps the latest 30 beyond 24 hours');
+ for(let i=0;i<140;i++)ctx.record(group,{id:'new'+i,user:bob,text:'中'.repeat(300),time:now+i,fromBot:false,media:[]},now+i);
+ assert.equal(ctx.recent(group,now+140).length,CONTEXT_LINE_LIMIT);
+ assert.equal(ctx.wasClipped(group),true);
+ const quote={id:'missing',user:alice,text:'以前引用',time:now-CONTEXT_WINDOW_MS*5,fromBot:false,media:[]};
+ const [intro,turn]=contextMessages(ctx.recent(group,now+140),{asker:bob,quoted:quote,clipped:ctx.wasClipped(group)});
+ const rows=JSON.parse(turn.content);
+ assert.ok(turn.content.length<=CONTEXT_CHARS_LIMIT);
+ assert.ok(rows.length<=CONTEXT_LINE_LIMIT&&rows.length>5);
+ assert.equal(rows[0].text,'以前引用');assert.equal(rows[0].quoted,true);
+ assert.equal(rows.at(-1).text,'中'.repeat(300),'recent conversation wins when trimmed');
+ assert.match(intro.content,/上下文已截断/);
+ const restored=new GroupContext();restored.load(ctx.export(),now+CONTEXT_WINDOW_MS+1000);
+ assert.equal(restored.recent(group,now+CONTEXT_WINDOW_MS+1000).length,30,'persistence preserves 30 old rows');
+ assert.deepEqual(ctx.recentMedia(group,now+CONTEXT_WINDOW_MS*2,60_000),[]);
+});
+
+test('owner receives a rate-limited, content-free log when the model room snapshot was truncated',async()=>{
+ const a=setup();for(let i=1;i<=105;i++)await a.say(i,bob,[text('隐私内容'.repeat(45)+i)]);
+ await a.say(106,alice,[at(self),text('总结一下')]);
+ await a.say(107,alice,[at(self),text('再说一次')]);
+ assert.equal(a.inputs.length,2);
+ assert.equal(a.logs.filter(s=>s.includes('模型上下文超过')).length,1);
+ assert.ok(a.inputs[0].some(m=>String(m.content).includes('【上下文已截断】')));
+ assert.ok(!a.logs.join(' ').includes('隐私内容'));
 });

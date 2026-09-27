@@ -6,6 +6,7 @@ module.exports = [
       "tests/p2-*.browser.cjs",
       "scripts/check-browser-assets.cjs",
       "scripts/write-release-report.cjs",
+      "scripts/verify-launch-target.cjs",
     ],
     languageOptions: { ecmaVersion: 2022, sourceType: "commonjs" },
     rules: {

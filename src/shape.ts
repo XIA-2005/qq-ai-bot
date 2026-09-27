@@ -24,7 +24,7 @@ function splitLong(line:string,max:number):string[]{
   let cut=-1;
   for(const re of [/[。！？!?…]+[」』”）)]*(?=[^。！？!?…]*$)/,/[，,、；;：:](?=[^，,、；;：:]*$)/,/\s(?=\S*$)/]){
    const m=head.match(re);
-   if(m&&m.index!==undefined&&m.index>0){cut=m.index+m[0].length;break;}
+   if(m&&m.index!==undefined&&m.index>0){cut=[...head.slice(0,m.index+m[0].length)].length;break;}
   }
   if(cut<=0||cut<Math.floor(max/3))cut=max;
   const piece=[...rest].slice(0,cut).join('').trim();

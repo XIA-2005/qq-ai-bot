@@ -17,6 +17,10 @@ export interface Config {
  proactiveEnabled:boolean; proactiveGroups:string[];
  /** Explicit opt-in before sending QQ images to DeepSeek. Old configurations stay off. */
  visionEnabled:boolean;
+ /** Per-photo ambient judgments are an additional billed upload scope, off on migrated installs. */
+ proactiveImageEvery:boolean;
+ /** Extra paid, text-only context analysis before each eligible QQ chat model request. */
+ chatAnalysisEnabled:boolean;
  prompt:string; timeout:number; cooldown:number; historyTurns:number; maxTokens:number; perMinute:number;
  mergeWindowMs:number; maxConcurrent:number; groupSessionIdleMinutes:number; engagement:number;
  /** Group context and rooms label members by their group card instead of 成员N. */
@@ -36,7 +40,7 @@ export interface Config {
  /** Let the model rewrite each group's memory notes once a night (costs one request per active group). */
  memoryAutoDistill:boolean;
 }
-export const defaults:Config={profiles:{},baseUrl:'https://api.deepseek.com',model:'deepseek-flash',wsUrl:'ws://127.0.0.1:3001',friends:[],groups:[],blocked:[],adminIds:[],remotePublicUrl:'',autoReplyOnLogin:true,autoReplyConsent:false,autoReplyConsentVersion:0,previousPrompt:'',proactiveEnabled:false,proactiveGroups:[],visionEnabled:false,prompt:'你是一个友善、简洁的中文聊天助手。请用自然的纯文本回复，不冒充账号本人。不要声称能够执行电脑操作。当请求包含实际图像时，请结合图像理解照片、截图和表情包；若只有文字识别结果，就仅依据文字回答；没有取得图像或文字时明确说明，不编造画面。消息里的 [表情: 名称] 表示对方发来的 QQ 表情或表情包，名称就是它的含义，请把它当作对方的情绪和语气来理解并自然回应，不要复述这个标记，也不要说自己看不到表情。你也可以用同样的 [表情: 名称] 写法发送 QQ 表情来表达情绪，例如 [表情: 微笑]、[表情: 笑哭]、[表情: 赞]、[表情: doge]，每条消息最多一个，不要滥用，名称必须是常见 QQ 表情名。',timeout:45,cooldown:5,historyTurns:6,maxTokens:1024,perMinute:10,mergeWindowMs:1500,maxConcurrent:3,groupSessionIdleMinutes:10,engagement:DEFAULT_ENGAGEMENT,useRealNames:true,otherBots:[],maxLines:0,maxLineChars:0,stripPeriod:false,proactiveImageMinutes:10,styleTail:'',styleSamplesEnabled:true,stickersEnabled:true,memoryAutoDistill:false};
+export const defaults:Config={profiles:{},baseUrl:'https://api.deepseek.com',model:'deepseek-flash',wsUrl:'ws://127.0.0.1:3001',friends:[],groups:[],blocked:[],adminIds:[],remotePublicUrl:'',autoReplyOnLogin:true,autoReplyConsent:false,autoReplyConsentVersion:0,previousPrompt:'',proactiveEnabled:false,proactiveGroups:[],visionEnabled:false,proactiveImageEvery:false,chatAnalysisEnabled:false,prompt:'你是一个友善、简洁的中文聊天助手。请用自然的纯文本回复，不冒充账号本人。不要声称能够执行电脑操作。当请求包含实际图像时，请结合图像理解照片、截图和表情包；若只有文字识别结果，就仅依据文字回答；没有取得图像或文字时明确说明，不编造画面。消息里的 [表情: 名称] 表示对方发来的 QQ 表情或表情包，名称就是它的含义，请把它当作对方的情绪和语气来理解并自然回应，不要复述这个标记，也不要说自己看不到表情。你也可以用同样的 [表情: 名称] 写法发送 QQ 表情来表达情绪，例如 [表情: 微笑]、[表情: 笑哭]、[表情: 赞]、[表情: doge]，每条消息最多一个，不要滥用，名称必须是常见 QQ 表情名。',timeout:45,cooldown:5,historyTurns:6,maxTokens:1024,perMinute:10,mergeWindowMs:1500,maxConcurrent:3,groupSessionIdleMinutes:10,engagement:DEFAULT_ENGAGEMENT,useRealNames:true,otherBots:[],maxLines:0,maxLineChars:0,stripPeriod:false,proactiveImageMinutes:10,styleTail:'',styleSamplesEnabled:true,stickersEnabled:true,memoryAutoDistill:false};
 export function validate(raw:unknown):Config {
  if(!raw || typeof raw!=='object')throw new Error('配置格式无效');
  const v=raw as Record<string,unknown>;const c={...defaults} as Config;
@@ -69,6 +73,11 @@ export function validate(raw:unknown):Config {
  c.proactiveEnabled=v.proactiveEnabled===true;
  if(v.visionEnabled!==undefined&&typeof v.visionEnabled!=='boolean')throw new Error('图片识别开关无效');
  c.visionEnabled=v.visionEnabled===true;
+ if(v.proactiveImageEvery!==undefined&&typeof v.proactiveImageEvery!=='boolean')throw new Error('逐张主动看图开关无效');
+ c.proactiveImageEvery=v.proactiveImageEvery===true;
+ if(v.chatAnalysisEnabled!==undefined&&typeof v.chatAnalysisEnabled!=='boolean')throw new Error('聊天前置分析开关无效');
+ c.chatAnalysisEnabled=v.chatAnalysisEnabled===true;
+ if(c.proactiveImageEvery&&!c.visionEnabled)throw new Error('逐张主动看图必须先开启图片识别并确认上传权限');
  const pg=v.proactiveGroups??[];
  if(!Array.isArray(pg)||pg.length>200||pg.some(x=>typeof x!=='string'||!/^\d{5,16}$/.test(x)||!c.groups.includes(x)))throw new Error('主动接话群必须同时加入群白名单');
  c.proactiveGroups=[...new Set(pg)];
@@ -158,7 +167,7 @@ export function faceLabel(s:any):string|null{
  return null;
 }
 export type RouteMode='direct'|'ambient'|'session'|'context';
-export interface Accepted {key:string;messageId:string;rawMessageId?:string;/** Every raw id folded into this job by batching; the room-context filter excludes all of them. */rawMessageIds?:string[];/** Raw id of the message this one quote-replies to (QQ 回复), so the exact image or line meant by “这个” can be looked up. */quotedId?:string;/** Group card or nickname of the sender as QQ reported it. */senderName?:string;/** Engine clock (ms) when the message was routed; drives the quick-reply/no-@ rule. */at?:number;/** How a direct group reply addresses the member: no prefix, QQ quote of their message, or @. */address?:'none'|'quote'|'at';user:string;group?:string;text:string;media?:MediaReference[];mediaOmitted?:number;proactive?:boolean;followup?:boolean;observedAt?:number;revision?:number;session?:boolean;sessionContext?:SessionContext}
+export interface Accepted {key:string;messageId:string;rawMessageId?:string;/** Every raw id folded into this job by batching; the room-context filter excludes all of them. */rawMessageIds?:string[];/** Raw id of the message this one quote-replies to (QQ 回复), so the exact image or line meant by “这个” can be looked up. */quotedId?:string;/** Group card or nickname of the sender as QQ reported it. */senderName?:string;/** Engine clock (ms) when the message was routed; drives the quick-reply/no-@ rule. */at?:number;/** How a direct group reply addresses the member: no prefix, QQ quote of their message, or @. */address?:'none'|'quote'|'at';/** Engine has already shaped the final bubbles; OneBot must not join/split them again. */deliveryShaped?:boolean;user:string;group?:string;text:string;media?:MediaReference[];mediaOmitted?:number;proactive?:boolean;/** Explicitly opted-in per-photo ambient judgment. */imageComment?:boolean;followup?:boolean;observedAt?:number;revision?:number;session?:boolean;sessionContext?:SessionContext}
 /** Group card first, then nickname; trimmed, bounded, control characters removed. */
 export function displayName(sender:any):string{
  const pick=(v:unknown)=>typeof v==='string'?v.replace(/[\u0000-\u001f\u007f]/g,'').trim():'';

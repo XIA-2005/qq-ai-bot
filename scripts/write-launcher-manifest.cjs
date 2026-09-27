@@ -33,6 +33,15 @@ if(major>0||minor>9||(minor===9&&patch>=2)){
   if(!asar.extractFile(appAsar,entry).length)throw new Error(`Packaged P2 resource missing: ${entry}`);
  }
 }
+if(major>0||minor>9||(minor===9&&patch>=5)){
+ for(const entry of ['dist/group-history-export.js','ui/history-export-ui.js','ui/history-export.css','tools/export-group-history.cjs']){
+  if(!asar.extractFile(appAsar,entry).length)throw new Error(`Packaged history-export resource missing: ${entry}`);
+ }
+ const html=asar.extractFile(appAsar,'ui/index.html').toString('utf8');
+ if(!html.includes('群聊历史导出')||!html.includes('history-export-ui.js')){
+  throw new Error('Packaged desktop history-export entry missing');
+ }
+}
 const hash = file => new Promise((resolve, reject) => {
  const digest = crypto.createHash('sha256');
  const stream = fs.createReadStream(file);

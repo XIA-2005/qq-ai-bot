@@ -10,12 +10,16 @@ export class Store{
   catch{this.warning='读取已保存配置失败（可能密钥不属于当前 Windows 用户）。请重新填写并保存。';}
  }
  private decrypt(x:unknown){if(!x)return '';if(typeof x!=='string'||!safeStorage.isEncryptionAvailable())throw new Error('加密不可用');return safeStorage.decryptString(Buffer.from(x,'base64'));}
- save(c:Config,key:string,token:string){
+ static seal(c:Config,key:string,token:string){
   if(!safeStorage.isEncryptionAvailable())throw new Error('系统凭据加密不可用，拒绝明文保存');
   if(process.platform==='linux'&&safeStorage.getSelectedStorageBackend()==='basic_text')throw new Error('缺少安全凭据存储后端');
   const encrypt=(s:string)=>s?safeStorage.encryptString(s).toString('base64'):'';
+  return JSON.stringify({version:1,config:validate(c),key:encrypt(key),token:encrypt(token)},null,2);
+ }
+ save(c:Config,key:string,token:string){
+  const sealed=Store.seal(c,key,token);
   fs.mkdirSync(this.dir,{recursive:true});const file=path.join(this.dir,'settings.json');const tmp=file+'.tmp';
-  fs.writeFileSync(tmp,JSON.stringify({version:1,config:c,key:encrypt(key),token:encrypt(token)},null,2),{mode:0o600});fs.renameSync(tmp,file);
+  fs.writeFileSync(tmp,sealed,{mode:0o600});fs.renameSync(tmp,file);
   this.config=c;this.key=key;this.token=token;this.warning='';
  }
 }

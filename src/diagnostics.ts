@@ -8,6 +8,14 @@ import {createHash} from 'node:crypto';
  */
 export const LOG_KEEP_DAYS=14;
 const day=(d:Date)=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+/** Sanitize free-form error/log text as well as structured config values. No message body is intentionally logged. */
+export function redactText(value:string):string{
+ return value.replace(/[\r\n]+/g,' ')
+  .replace(/\bsk-[A-Za-z0-9_-]{8,}/gi,'[redacted]')
+  .replace(/\b(authorization\s*[:=]\s*)(?:bearer|basic)\s+[^\s"',;]+/gi,'$1[redacted]')
+  .replace(/\bbearer\s+[^\s"',;]+/gi,'Bearer [redacted]')
+  .replace(/\b((?:api[_-]?key|(?:access|refresh|tunnel)[_-]?token|token|secret|password|credential|authorization)["']?\s*[:=]\s*["']?)[^\s"'&,;]+/gi,'$1[redacted]');
+}
 export class FileLog {
  private dir:string;private current='';private file='';private failed=false;
  constructor(userData:string,private now:()=>Date=()=>new Date()){this.dir=path.join(userData,'logs');}
@@ -17,7 +25,7 @@ export class FileLog {
   const t=this.now();const d=day(t);
   try{
    if(d!==this.current){fs.mkdirSync(this.dir,{recursive:true});this.current=d;this.file=path.join(this.dir,d+'.log');this.prune();}
-   fs.appendFileSync(this.file,t.toTimeString().slice(0,8)+' '+message.replace(/[\r\n]+/g,' ').slice(0,2000)+'\n',{mode:0o600});
+   fs.appendFileSync(this.file,t.toTimeString().slice(0,8)+' '+redactText(message).slice(0,2000)+'\n',{mode:0o600});
   }catch{this.failed=true;}
  }
  /** Delete log files older than LOG_KEEP_DAYS. */
@@ -44,8 +52,7 @@ export function redact(value:unknown,depth=0):unknown{
   for(const [k,v] of Object.entries(value as Record<string,unknown>))out[k]=SECRET_KEYS.test(k)?(v?'[redacted]':v):redact(v,depth+1);
   return out;
  }
- if(typeof value==='string'&&/^sk-[A-Za-z0-9]{8,}/.test(value))return '[redacted]';
- return value;
+ return typeof value==='string'?redactText(value):value;
 }
 function sha256(file:string){try{return createHash('sha256').update(fs.readFileSync(file)).digest('hex');}catch{return '';}}
 /** Writes diagnostics/<timestamp>/ under userData and returns its path. Never throws for optional parts. */
@@ -61,19 +68,25 @@ export function exportDiagnostics(userData:string,info:DiagnosticsInfo,now:Date=
   const asar=path.join(dir,'resources','app.asar');if(fs.existsSync(asar))manifest.asarSha256Now=sha256(asar);
   if(fs.existsSync(info.execPath))manifest.exeSha256Now=sha256(info.execPath);
  }catch{}
- write('versions.json',{exportedAt:now.toISOString(),version:info.version,packaged:info.packaged,execPath:info.execPath,platform:info.platform,electron:info.electron,node:info.node,...manifest});
+ write('versions.json',redact({exportedAt:now.toISOString(),version:info.version,packaged:info.packaged,execPath:info.execPath,platform:info.platform,electron:info.electron,node:info.node,...manifest}));
  write('config.redacted.json',redact(info.config));
- write('engine.json',info.engine);
- write('recent-log.txt',info.recentLogs.map(l=>l.time+' '+l.message).join('\n'));
+ write('engine.json',redact(info.engine));
+ write('recent-log.txt',info.recentLogs.map(l=>redactText(l.time+' '+l.message)).join('\n'));
  const logDir=path.join(userData,'logs');
  try{
   fs.mkdirSync(path.join(out,'logs'),{recursive:true});
   const files=fs.readdirSync(logDir).filter(f=>/^\d{4}-\d{2}-\d{2}\.log$/.test(f)).sort().slice(-3);
-  for(const f of files)fs.copyFileSync(path.join(logDir,f),path.join(out,'logs',f));
+  for(const f of files){
+   // Older versions could have written an error containing a token. Never copy an old file raw.
+   const source=path.join(logDir,f);
+   if(fs.statSync(source).size>2*1024*1024)continue;
+   const safe=fs.readFileSync(source,'utf8').split(/\r?\n/).map(redactText).join('\n');
+   fs.writeFileSync(path.join(out,'logs',f),safe,{mode:0o600});
+  }
  }catch{}
  for(const extra of ['remote-audit.json','usage-ledger.json','model-budget.json','api-status.json']){
   try{if(fs.existsSync(path.join(userData,extra)))write(extra,redact(JSON.parse(fs.readFileSync(path.join(userData,extra),'utf8'))));}catch{}
  }
- write('README.txt','QQ AI Bot 诊断包。内容：版本与包哈希、脱敏后的配置（密钥/令牌已移除）、引擎计数、最近日志（不含消息正文）、最近 3 天的日志文件、审计与用量记录。分享前请自行再检查一遍。');
+ write('README.txt','QQ AI Bot 诊断包。内容：版本与包哈希、尝试脱敏的配置、引擎计数、最近日志与审计/用量记录。日志不应记录聊天正文，但旧版日志或异常文字仍可能含 QQ 号、路径等个人信息；大于 2 MB 的日志文件会跳过。分享前请自行逐项检查。');
  return out;
 }
